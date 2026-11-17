@@ -1,0 +1,36 @@
+{
+  "name": "lunabot-p903-render-probe",
+  "displayName": "LunaBot Camera Render Probe",
+  "description": "Measures camera frame receive-to-paint timing and estimates source gaps for P9-03.",
+  "publisher": "lunabot",
+  "version": "0.1.1",
+  "license": "UNLICENSED",
+  "main": "./dist/extension.js",
+  "keywords": ["camera", "performance", "render", "lunabot"],
+  "dependencies": {
+    "@foxglove/extension": "^2.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@foxglove/eslint-plugin": "^2.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "create-foxglove-extension": "^1.0.0",
+    "eslint": "^9.0.0",
+    "globals": "^15.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.0.0",
+    "typescript-eslint": "^8.0.0"
+  },
+  "scripts": {
+    "build": "foxglove-extension build",
+    "foxglove:prepublish": "foxglove-extension build --mode production",
+    "lint": "eslint .",
+    "lint:ci": "eslint .",
+    "lint:fix": "eslint --fix .",
+    "local-install": "foxglove-extension install",
+    "package": "foxglove-extension package",
+    "pretest": "foxglove-extension pretest"
+  }
+}

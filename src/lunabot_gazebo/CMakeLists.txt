@@ -1,0 +1,13 @@
+cmake_minimum_required(VERSION 3.8)
+project(lunabot_gazebo)
+find_package(ament_cmake REQUIRED)
+find_package(ignition-gazebo6 REQUIRED)
+find_package(ignition-transport11 REQUIRED)
+find_package(ignition-msgs8 REQUIRED)
+add_library(lunabot_command_watchdog SHARED src/command_watchdog.cc)
+target_compile_features(lunabot_command_watchdog PRIVATE cxx_std_17)
+target_link_libraries(lunabot_command_watchdog ignition-gazebo6::ignition-gazebo6
+  ignition-transport11::ignition-transport11 ignition-msgs8::ignition-msgs8)
+install(TARGETS lunabot_command_watchdog LIBRARY DESTINATION lib)
+install(DIRECTORY models worlds DESTINATION share/${PROJECT_NAME})
+ament_package()

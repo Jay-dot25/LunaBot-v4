@@ -10,3 +10,30 @@ __pycache__/
 .idea/
 .vscode/
 *.swp
+
+# Local native actuator safety build
+.build/
+
+# ROS/colcon and pytest output; these are regenerated from source.
+/build/
+/install/
+/log/
+/.pytest_cache/
+
+# Ad hoc full-output bundles and Windows alternate-stream sidecars.
+/all_outputs.zip
+/full_output.zip
+/*:Zone.Identifier
+
+# Transient runtime traces are retained locally when useful but are not source
+# artifacts; reviewed summaries and reproducible scripts remain trackable.
+/evidence/**/*.log
+/evidence/**/*.pid
+/evidence/**/*.sqlite3
+/evidence/**/*.sqlite3-wal
+/evidence/**/*.sqlite3-shm
+
+# Run directories and launcher captures are generated locally. Existing
+# reviewed evidence already tracked by Git remains tracked under these rules.
+/evidence/runs/
+/evidence/phase-*/

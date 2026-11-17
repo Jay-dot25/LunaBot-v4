@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# One terminal: headless physics plus the tested RViz software-rendering profile.
+set -eu
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
+export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+export EVIDENCE_DIR="${EVIDENCE_DIR:-$REPO_DIR/evidence/runs/$(date +%Y%m%d-%H%M%S)-phase-d-view-$$}"
+export HEADLESS=1
+export DEMO=0
+export AUTO_GOAL=false
+export EVIDENCE="${EVIDENCE:-0}"
+mkdir -p "$EVIDENCE_DIR"
+launch_pid=''
+rviz_pid=''
+cleanup() {
+  trap - INT TERM EXIT
+  if [ -n "$rviz_pid" ]; then kill -TERM "$rviz_pid" 2>/dev/null || true; wait "$rviz_pid" 2>/dev/null || true; fi
+  if [ -n "$launch_pid" ]; then kill -TERM "$launch_pid" 2>/dev/null || true; wait "$launch_pid" 2>/dev/null || true; fi
+}
+trap cleanup INT TERM EXIT
+echo "Phase D visual evidence: $EVIDENCE_DIR"
+bash "$REPO_DIR/launch-d" &
+launch_pid=$!
+ready=0
+for _ in $(seq 1 180); do
+  kill -0 "$launch_pid" 2>/dev/null || { wait "$launch_pid"; exit 1; }
+  if [ -z "$rviz_pid" ] && grep -Fq '[11/14] A* navigation OK' "$EVIDENCE_DIR/last_run.log" 2>/dev/null; then
+    bash "$REPO_DIR/scripts/rviz-d.sh" > "$EVIDENCE_DIR/rviz.log" 2>&1 &
+    rviz_pid=$!
+  fi
+  if grep -Fq '[14/14] status printed (overall PASS)' "$EVIDENCE_DIR/last_run.log" 2>/dev/null; then ready=1; break; fi
+  if grep -Fq '[14/14] status printed (overall FAIL)' "$EVIDENCE_DIR/last_run.log" 2>/dev/null; then break; fi
+  sleep 1
+done
+[ "$ready" = 1 ] || { echo 'Startup did not pass; inspect the evidence directory above.'; exit 1; }
+kill -0 "$rviz_pid" 2>/dev/null || { echo 'RViz exited; inspect rviz.log.'; exit 1; }
+echo "RViz is ready. Set a goal in connected mapped free space. Ctrl+C stops both."
+wait "$rviz_pid"
+rviz_pid=''

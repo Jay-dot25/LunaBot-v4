@@ -3,8 +3,9 @@
 ## 1. Scope and gate
 
 Phase G adds a numeric terrain-cost layer to the approved Phase F stack. It
-converts the real semantic terrain grid into a traversability cost grid with a
-conservative obstacle inflation halo. It does not change A*, add a second
+fuses the semantic grid with aligned slope, roughness, crater-risk, and
+uncertainty layers, then applies a conservative obstacle inflation halo. It
+does not change A*, add a second
 planner, alter localization, or bypass the Phase B controller.
 
 The cost grid uses values from 0 to 100:
@@ -32,7 +33,7 @@ before Phase G can be approved.
 ## 2. Data flow
 
 ```text
-Phase F /lunabot/terrain/semantic_map ──> terrain_cost_mapper
+Phase F semantic + slope/roughness/crater-risk/uncertainty grids ──> terrain_cost_mapper
                                              ├─ /lunabot/terrain/cost_map
                                              └─ /lunabot/terrain/cost_map/status
 
@@ -42,19 +43,37 @@ slam_toolbox -> /map -> A* -> /cmd_vel_in -> Phase B controller -> /cmd_vel
 
 The cost mapper is a pure ROS node. It republishes the semantic map geometry,
 converts labels to costs, and inflates obstacle cells using the input map
-resolution. It publishes no velocity, TF, or localization data.
+resolution. Geometry layers are generated from timestamped depth returns:
+slope uses local elevation gradients, roughness uses local detrended height
+spread, and crater risk scores a local bowl depression against its surrounding
+annulus. These are geometric risk scores, not confirmed geology labels. Missing
+geometry raises uncertainty. For traversable semantic cells, the cost mapper
+combines the four 0–100 risks with weights 0.25 slope, 0.20 roughness, 0.35
+crater risk, and 0.20 uncertainty. The weighted risk raises terrain cost from
+20 toward 100. Unknown and shadow semantic values remain caution cost 80;
+geometry never turns them into obstacles. Semantic obstacle cells and the
+independent obstacle overlay remain hard costs. It publishes no velocity, TF,
+or localization data.
 
 ## 3. Interface contract
 
 | Interface | Type | Role |
 |---|---|---|
 | `/lunabot/terrain/semantic_map` | `nav_msgs/OccupancyGrid` | Phase F semantic input |
+| `/lunabot/terrain/semantic_map/slope` | `nav_msgs/OccupancyGrid` | local slope risk 0–100 |
+| `/lunabot/terrain/semantic_map/roughness` | `nav_msgs/OccupancyGrid` | local height-spread risk 0–100 |
+| `/lunabot/terrain/semantic_map/crater_risk` | `nav_msgs/OccupancyGrid` | depression candidate risk 0–100 |
+| `/lunabot/terrain/semantic_map/uncertainty` | `nav_msgs/OccupancyGrid` | combined confidence/age/geometry uncertainty |
 | `/lunabot/terrain/cost_map` | `nav_msgs/OccupancyGrid` | inflated traversability costs |
 | `/lunabot/terrain/cost_map/status` | `std_msgs/String` | frame and cost-cell statistics |
 
 The cost map and status are Reliable + Transient Local for late-joining RViz
 and runtime diagnostics. A successful status contains `COST_MAP_PASS` and
-reports terrain, unknown, obstacle, and inflated-cell counts.
+reports terrain, unknown, obstacle, and inflated-cell counts plus the aligned
+geometry layers. All layers must match frame, dimensions, resolution, origin,
+orientation, and source snapshot stamp before fusion; incompatible or late
+layers cause the cost mapper to wait. Shadows are encoded as unknown/caution,
+never as obstacles.
 
 ## 4. Installation
 
@@ -134,6 +153,10 @@ Runtime evidence is written to `evidence/phase-g-launch-g/`:
 | `cost_mapping.log` | cost-map node diagnostics |
 | `cost_map_sample.txt` | real cost `OccupancyGrid` sample |
 | `cost_map_status.txt` | real `COST_MAP_PASS` status sample |
+| `semantic_slope_sample.txt` | aligned slope risk grid |
+| `semantic_roughness_sample.txt` | aligned roughness risk grid |
+| `semantic_crater_risk_sample.txt` | aligned crater-candidate risk grid |
+| `semantic_uncertainty_sample.txt` | aligned uncertainty grid |
 | `semantic_map_sample.txt` | inherited Phase F input sample |
 | `semantic_map_status.txt` | inherited Phase F status sample |
 | `segmentation_sample.txt` | inherited Phase E mask sample |

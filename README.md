@@ -1,5 +1,17 @@
 # LunaBot V4 — Autonomous Navigation of a Robot for Lunar Habitats
 
+Current restructuring work is tracked in [the roadmap](docs/project-roadmap.md)
+and [task board](docs/task-board.md). A-L statuses below describe the historical
+baseline; current changes have their own recorded verification scope.
+Headless operation does not require RViz. Safety startup now uses an independent
+native actuator watchdog and explicit health arming; see
+[safety fault handling](docs/safety-faults.md) and [packaging](docs/packaging.md).
+
+For the tested WSL Phase D visual setup, run `bash ./launch-d-view` from this
+repository. See [the visual navigation guide](docs/phase-d-gui.md) for its
+separate level-LiDAR profile, rendering fix, evidence, and verification limits.
+
+
 12-phase development of an autonomous lunar rover, phase-gated: each phase
 has its own **independent** launch command, is validated at runtime before
 it is approved, and every later phase reuses the validated baseline of the
@@ -25,6 +37,21 @@ earlier ones.
 Each implemented phase has a document under `docs/` covering objective,
 inputs, data flow, ROS nodes/topics/services, TF frames, launch command,
 validation procedure, success criteria, evidence, and limitations.
+
+## Run the maintained test suite
+
+In the ROS 2 Humble environment, source ROS and run the project tests from the
+repository root:
+
+```bash
+source /opt/ros/humble/setup.bash
+python3 -m pytest -q
+```
+
+Pytest is configured to collect only `tests/` and the bringup package tests;
+historical runtime scripts and evidence under `evidence/` are not test inputs.
+The MarsSeg Parquet integration test is skipped when optional `pyarrow` is not
+installed, while its dependency-free label-remapping checks still run.
 
 For one consolidated code map, command reference, topic contract, runtime
 inspection guide, evidence guide, and final A-to-L acceptance procedure, see

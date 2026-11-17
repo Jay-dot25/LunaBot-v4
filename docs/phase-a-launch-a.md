@@ -22,9 +22,9 @@ None. Phase A is the first phase. It reuses the existing repository assets
 
 | Item | What was added/fixed |
 |---|---|
-| Lunar terrain asset | **Created** `worlds/meshes/lunar_terrain.obj` (visual, 320×320 grid, 1.25 m, per-vertex grey albedo) + `lunar_terrain_collision.obj` (100×100, 4 m). The world referenced `meshes/lunar_terrain.obj` but **no mesh existed** — the world previously had no ground at all. Generated deterministically by `tools/generate_lunar_terrain.py` (seed 42). |
-| Terrain geometry | 400 m × 400 m crater field: 220 small craters (3–10 m), 70 medium (12–30 m), 7 large (44–90 m, with rims and central peaks), multi-octave rolling relief (~14 m total relief), fine rocky roughness, smooth spawn pad at the origin, flat boundary shelf. |
-| World physics and presentation set | Terrain split into high-detail visual + low-detail collision mesh (fast DART physics). Lunar gravity `0 0 -1.62` (already present, preserved). Horizon catch-plane added so driving past the terrain edge does not void the world. Added static lunar habitat, equipment module, visible rock, and a forward physical obstacle with collision geometry for later sensor/replanning phases. |
+| Lunar terrain asset | `worlds/meshes/lunar_terrain.obj` renders the 400×400 m context at 320×320 (1.25 m) with per-vertex grey albedo. Physics uses a decimated 4 m context mesh with a 1 m collision patch over a 52×52 m area around the 40×40 m mission arena. Generated deterministically by `tools/generate_lunar_terrain.py` (seed 42). |
+| Terrain geometry | 400 m × 400 m crater field: 3 canonical mission craters, 8 large context craters, 60 medium craters, and 180 small craters; multi-octave rolling relief, fine rocky roughness, smooth spawn pad, and flat boundary shelf. |
+| World physics and presentation set | Terrain uses a decimated 4 m collision mesh for surrounding context and a 1 m mission-area patch for local physics detail. Lunar gravity `0 0 -1.62` (already present, preserved). GUI camera far clip is capped at 800 m for the 400 m terrain context. Horizon catch-plane added so driving past the terrain edge does not void the world. Added static lunar habitat, equipment module, visible rock, and a forward physical obstacle with collision geometry for later sensor/replanning phases. |
 | Launch script | `scripts/launch-a.sh` rewritten: 10 staged startup steps with live `OK/FAIL`, real runtime validation (topic + TF checks, not assumptions), `HEADLESS`/`DEMO`/`EVIDENCE` modes, trap-based clean shutdown with orphan guard, log capture to `evidence/phase-a-launch-a/`. |
 | Sensor bridge | Bridge extended from 5 to 15 topic mappings: added depth camera, IMU, joint states, steer joints, mast pan/tilt. |
 | TF | Replaced the single approximate `chassis→lidar` static TF with an accurate 4-frame static tree taken from the model SDF (`chassis→sensor_head→{rgb_camera, depth_camera, lidar}`). |
@@ -297,7 +297,8 @@ scripts/launch-a.sh                       # launch logic (staged, validated, cle
 scripts/wasd_teleop.py                    # teleop + demo drive test
 src/lunabot_gazebo/worlds/lunar_world.sdf # lunar world (terrain, horizon, plugins, GUI)
 src/lunabot_gazebo/worlds/meshes/lunar_terrain.obj           # visual terrain (16.3 MB)
-src/lunabot_gazebo/worlds/meshes/lunar_terrain_collision.obj # collision terrain (1.2 MB)
+src/lunabot_gazebo/worlds/meshes/lunar_terrain_collision.obj # low-detail context collision
+src/lunabot_gazebo/worlds/meshes/lunar_terrain_mission_collision.obj # 1 m collision detail in mission area
 src/lunabot_gazebo/models/lunabot_v4/model.sdf               # rover (unchanged)
 rviz/phase_a.rviz                         # RViz display config
 tools/generate_lunar_terrain.py           # deterministic terrain generator (seed 42)
@@ -312,7 +313,8 @@ evidence/phase-a-launch-a/                # terrain previews, stats, validation,
 | File | Reason |
 |---|---|
 | `src/lunabot_gazebo/worlds/meshes/lunar_terrain.obj` | world referenced a terrain mesh that did not exist; creates the visual lunar terrain |
-| `src/lunabot_gazebo/worlds/meshes/lunar_terrain_collision.obj` | low-res physics mesh (fast DART) |
+| `src/lunabot_gazebo/worlds/meshes/lunar_terrain_collision.obj` | 4 m outer physics mesh with a mission-area opening |
+| `src/lunabot_gazebo/worlds/meshes/lunar_terrain_mission_collision.obj` | 1 m physics detail covering the mission arena and a 6 m margin |
 | `launch-a` | canonical `~/launch-a` entry point |
 | `rviz/phase_a.rviz` | proper RViz displays (was: bare `rviz2 -f`) |
 | `tools/generate_lunar_terrain.py` | reproducible terrain (deterministic, seed 42) |
@@ -326,7 +328,7 @@ evidence/phase-a-launch-a/                # terrain previews, stats, validation,
 |---|---|
 | `scripts/launch-a.sh` | rewritten: staged output, real runtime validation, 15-mapping bridge, accurate static TF, resource-path export, `HEADLESS/DEMO/EVIDENCE`, trap-based clean shutdown + orphan guard, evidence logging, corrected spawn `z=-2.308` (was `z=80.2`, which assumed the missing mesh's coordinate system) |
 | `scripts/wasd_teleop.py` | speeds corrected to DiffDrive limits; `--demo` headless drive test; graceful handling of non-TTY; same WASD controls preserved |
-| `src/lunabot_gazebo/worlds/lunar_world.sdf` | collision/visual mesh separation; horizon catch-plane; stale "missing plugin" comment replaced (plugin kept); gravity/plugins/GUI camera unchanged |
+| `src/lunabot_gazebo/worlds/lunar_world.sdf` | split context and mission collision meshes; horizon catch-plane; stale "missing plugin" comment replaced (plugin kept); GUI far clip capped at 800 m |
 | `src/lunabot_gazebo/models/lunabot_v4/model.sdf` | (1) invalid XML comments fixed (double hyphens are illegal inside XML comments) — required for strict SDF parsing; (2) traction tuning for lunar gravity: 6 wheel joints damping 0.8→3.0 (velocity-control authority), wheel friction μ 2.2→4.0. Everything else (geometry, masses, sensors, plugin params) untouched |
 | `docs/phase-1-launch-a.md` → `docs/phase-a-launch-a.md` | renamed to master-prompt naming convention; content written |
 
@@ -381,10 +383,10 @@ evidence/phase-a-launch-a/                # terrain previews, stats, validation,
    generator is in-repo — regenerating with a different `--seed` is
    trivial if the field needs to change (regenerate, then update
    `SPAWN_Z` in `launch-a.sh` from the new `terrain_stats.txt`).
-3. Collision mesh is 4 m-res: small craters (3–10 m) are smoothed in
-   physics (visual-only detail). DiffDrive odometry is kinematic, so this
-   does not corrupt odometry; it becomes relevant when terrain-conforming
-   control is added (Phase B+).
+3. The 4 m collision context intentionally decimates distant terrain. A
+   1 m patch spans X=[-14,38] m and Y=[-18,34] m, covering the complete
+   40 m mission arena plus a 6 m margin. Fine surface variation below the
+   visual mesh's 1.25 m sampling remains interpolated in collision geometry.
 4. Rover is driven by the DiffDrive plugin (kinematic wheel commands);
    rocker-bogie joints are free but uncontrolled in Phase A (they react
    to contact). Steering/mast joint controllers exist and are bridged but

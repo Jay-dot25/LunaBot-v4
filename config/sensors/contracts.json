@@ -1,0 +1,14 @@
+{
+  "nominal_sim_hz": {
+    "/lunabot/camera/image_raw": 20,
+    "/lunabot/depth/image_raw": 15,
+    "/lunabot/camera/camera_info": 20,
+    "/lunabot/depth/camera_info": 15,
+    "/lunabot/lidar/scan": 10,
+    "/lunabot/imu": 100,
+    "/lunabot/odom": 30
+  },
+  "rate_tolerance_fraction": 0.2,
+  "max_stamp_age_sim_seconds": 0.25,
+  "notes": "Initial contract from configured rates; 20% tolerance accommodates bridge drops. Source geometric calibration, not real-world camera calibration. RGB-D extrinsic registration and inference synchronization remain P6-01."
+}

@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "suite_id": "lunabot-p10-five-scenarios-v1",
+  "seed": 20261113,
+  "measurement_scope": "deterministic weighted-grid scenario fixtures; not live Gazebo mission trials",
+  "grid": {"width": 40, "height": 30, "resolution_m": 0.1},
+  "planner": {"cost_weight": 2.0, "blocked_cost": 100, "unknown_cost": 80},
+  "seeded_roughness": {"enabled": true, "samples": 18, "maximum_cost": 12},
+  "trials_per_scenario": 3,
+  "scenarios": [
+    {
+      "scenario_id": "easy_sample_delivery",
+      "title": "Easy sample delivery",
+      "type": "delivery",
+      "start": [2, 14],
+      "goals": [[36, 14]],
+      "obstacles": [[18, 0, 18, 10]],
+      "terrain_regions": [],
+      "expected": {"delivery_complete": true}
+    },
+    {
+      "scenario_id": "crater_aware_navigation",
+      "title": "Crater-aware navigation",
+      "type": "hazard_avoidance",
+      "start": [2, 14],
+      "goals": [[37, 14]],
+      "obstacles": [],
+      "terrain_regions": [{"id": "crater_rim_and_bowl", "rect": [16, 10, 23, 18], "cost": 95}],
+      "expected": {"terrain_path_avoids_regions": ["crater_rim_and_bowl"], "occupancy_path_intersects_region": "crater_rim_and_bowl"}
+    },
+    {
+      "scenario_id": "unexpected_obstacle",
+      "title": "Unexpected obstacle and replan",
+      "type": "dynamic_obstacle",
+      "start": [2, 14],
+      "goals": [[37, 14]],
+      "obstacles": [],
+      "terrain_regions": [],
+      "obstacle_update": [[18, 12, 21, 16]],
+      "expected": {"delivery_complete": true, "require_changed_replan": true}
+    },
+    {
+      "scenario_id": "uncertain_terrain",
+      "title": "Uncertain terrain",
+      "type": "hazard_avoidance",
+      "start": [2, 14],
+      "goals": [[37, 14]],
+      "obstacles": [],
+      "terrain_regions": [{"id": "unknown_patch", "rect": [16, 10, 23, 18], "cost": 85}],
+      "expected": {"terrain_path_avoids_regions": ["unknown_patch"], "occupancy_path_intersects_region": "unknown_patch"}
+    },
+    {
+      "scenario_id": "full_outbound_return",
+      "title": "Full outbound delivery and return",
+      "type": "round_trip",
+      "start": [3, 5],
+      "goals": [[34, 22], [3, 5]],
+      "obstacles": [[18, 0, 18, 17], [25, 8, 27, 12]],
+      "terrain_regions": [{"id": "rough_crossing", "rect": [8, 14, 12, 20], "cost": 48}],
+      "expected": {"delivery_complete": true, "required_legs": 2, "return_to_start": true}
+    }
+  ]
+}

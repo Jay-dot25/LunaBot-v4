@@ -8,11 +8,19 @@ integration, but it does not publish velocity. The approved Phase D A* planner
 continues to provide the active `/cmd_vel_in` navigation path; Phase I will
 integrate terrain-aware planning into autonomous motion.
 
-The weighted planner uses 8-connected grid search. Cells at or above cost 100
-are blocked; traversable cells are weighted by their cost so lower-cost
-terrain is preferred. Unknown/caution cells remain traversable at a configured
-cost of 80, allowing the runtime to produce an auditable path before the map
-covers the entire grid.
+The weighted planner uses 8-connected grid search with a weighted traversal
+cost; lower-cost terrain is preferred. Cells at or above the configured
+blocked threshold are impassable. Start and goal cells must be in bounds and
+traversable; the planner never silently moves an endpoint to a nearby cell.
+Diagonal steps require both adjacent orthogonal cells to be traversable, so
+paths cannot cut through obstacle corners. Unknown cells use a configurable
+caution cost of 80 by default, or can be blocked by policy.
+
+Each cost grid receives a deterministic revision from its frame, dimensions,
+resolution, origin pose, and cost data. Header timestamps do not create a new
+revision when map content is unchanged. A changed revision immediately clears
+the latched terrain path and requests a new plan. Successful planner status
+includes the full cost-map revision used to generate the path.
 
 Terrain-aware path planning is the Phase H addition to the approved Phase G
 stack. It consumes `/lunabot/terrain/cost_map`, `/goal_pose`, and the existing
@@ -48,11 +56,11 @@ It publishes a path without motion output: it does not connect to `/cmd_vel_in`,
 | `/lunabot/odom` | `nav_msgs/Odometry` | current pose source |
 | `map -> chassis` TF | `tf2` | existing SLAM + odometry localization |
 | `/lunabot/terrain/plan` | `nav_msgs/Path` | weighted terrain-aware path |
-| `/lunabot/terrain/planner/status` | `std_msgs/String` | planning result and weighted cost |
+| `/lunabot/terrain/planner/status` | `std_msgs/String` | planning result, weighted cost, and cost-map revision |
 
 The path and status are Reliable + Transient Local for late-joining RViz and
 runtime diagnostics. A successful status contains `TERRAIN_PLAN_PASS`, path
-cell count, weighted cost, map frame, and cost weight.
+cell count, weighted cost, map frame, cost weight, and map revision.
 
 ## 4. Installation
 
@@ -75,6 +83,7 @@ python3 tools/validate_phase_h.py
 
 The validator checks the approved Phase A-G baseline, independent launch
 behavior, weighted cost search, blocked-cell handling, localization inputs,
+occupancy bounds, diagonal corner constraints, map revision invalidation,
 output/status QoS, real runtime checks, RViz output, evidence paths, and honest
 runtime gating. It never claims that a real terrain-aware path was generated.
 

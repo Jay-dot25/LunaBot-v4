@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from static_contracts import shared_shutdown
 """Static Phase C gate: SLAM & Localization.
 
 This validator checks repository structure and the independent launch contract.
@@ -82,7 +83,7 @@ for rel, kind in [("src/lunabot_gazebo/worlds/lunar_world.sdf", "world"),
 # validator when this repository's Python environment permits it.
 for rel in ["tools/validate_phase_a.py", "tools/validate_phase_b.py"]:
     r = run([sys.executable, rel])
-    expected = "80/80" if rel.endswith("phase_a.py") else "103/103"
+    expected = "96/96" if rel.endswith("phase_a.py") else "103/103"
     check(f"existing static gate remains green: {rel}",
           r.returncode == 0 and expected in r.stdout, r.stdout[-180:].strip())
 
@@ -112,8 +113,7 @@ check("Phase C evidence collector resolves the repository", "readlink -f" in col
 check("Phase C evidence collector enables evidence and demo", "DEMO=1 EVIDENCE=1" in collector)
 check("Phase C uses clean process-group startup", "setsid" in launch)
 check("Phase C has trap-controlled shutdown", "trap 'shutdown 130' INT TERM" in launch)
-check("Phase C has bounded process-group shutdown", "stop_group()" in launch and
-      "kill -KILL -\"$pid\"" in launch)
+check("Phase C has bounded process-group shutdown", shared_shutdown(launch))
 check("Phase C shuts down slam_toolbox first", 'stop_group "$SLAM_PID"' in launch)
 check("Phase C shuts down control and odometry", 'stop_group "$CONTROL_PID"' in launch and
       'stop_group "$ODOM_PID"' in launch)
@@ -160,7 +160,8 @@ check("bridge includes explicit LaserScan", '"/lunabot/lidar/scan@sensor_msgs/ms
 check("bridge includes explicit camera", '"/lunabot/camera/image_raw@sensor_msgs/msg/Image' in launch)
 check("bridge includes explicit IMU", '"/lunabot/imu@sensor_msgs/msg/Imu' in launch)
 check("bridge includes preserved odometry", '"/lunabot/odom@nav_msgs/msg/Odometry' in launch)
-check("static TF includes chassis to sensor head", '"chassis|sensor_head|' in launch)
+check("measured joint TF owns chassis to sensor head", 'scripts/sensor_mount_tf.py' in launch and
+      (ROOT / "scripts" / "sensor_mount_tf.py").is_file())
 check("static TF includes sensor head to lidar", '"sensor_head|lidar|' in launch)
 check("static TF includes exact Gazebo LaserScan frame", '"sensor_head|lunabot_v4/sensor_head/lidar|' in launch)
 check("control input boundary is preserved", "--input-topic /cmd_vel_in" in launch)

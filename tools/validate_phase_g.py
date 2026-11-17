@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from static_contracts import shared_shutdown
 """Static Phase G gate: terrain cost-map generation.
 
 This validator checks the independent launch-g contract and the approved
@@ -36,7 +37,10 @@ required = [
     "scripts/wasd_teleop.py", "scripts/control_odometry.py",
     "scripts/odometry_monitor.py", "scripts/astar_navigation.py",
     "scripts/terrain_segmentation.py", "scripts/semantic_terrain_mapper.py",
-    "scripts/terrain_cost_mapper.py", "config/slam_toolbox_phase_c.yaml",
+    "scripts/semantic_layers.py", "scripts/terrain_geometry.py",
+    "scripts/terrain_costs.py", "scripts/terrain_cost_mapper.py",
+    "tests/test_terrain_geometry.py", "tests/test_semantic_layers.py",
+    "config/slam_toolbox_phase_c.yaml",
     "rviz/phase_a.rviz", "rviz/phase_b.rviz", "rviz/phase_c.rviz",
     "rviz/phase_d.rviz", "rviz/phase_e.rviz", "rviz/phase_f.rviz", "rviz/phase_g.rviz",
     "tools/validate_phase_a.py", "tools/validate_phase_b.py",
@@ -57,6 +61,8 @@ for rel in ["launch-g", "scripts/launch-g.sh", "scripts/terrain_cost_mapper.py",
     check(f"executable: {rel}", p.is_file() and bool(p.stat().st_mode & 0o111))
 
 for rel in ["scripts/terrain_cost_mapper.py", "scripts/semantic_terrain_mapper.py",
+            "scripts/terrain_geometry.py", "scripts/terrain_costs.py",
+            "scripts/semantic_layers.py", "tests/test_terrain_geometry.py",
             "scripts/terrain_segmentation.py", "scripts/astar_navigation.py",
             "scripts/control_odometry.py", "scripts/odometry_monitor.py",
             "tools/validate_phase_a.py", "tools/validate_phase_b.py",
@@ -82,19 +88,26 @@ for rel, kind in [("src/lunabot_gazebo/worlds/lunar_world.sdf", "world"),
     except Exception as exc:
         check(f"{kind} SDF well-formed", False, str(exc))
 
-for rel, expected in [("tools/validate_phase_a.py", "80/80"),
+for rel, expected in [("tools/validate_phase_a.py", "96/96"),
                       ("tools/validate_phase_b.py", "103/103"),
                       ("tools/validate_phase_c.py", "133/133"),
                       ("tools/validate_phase_d.py", "152/152"),
-                      ("tools/validate_phase_e.py", "112/112"),
-                      ("tools/validate_phase_f.py", "122/122")]:
+                      ("tools/validate_phase_e.py", "112/112")]:
     r = run([sys.executable, rel])
     check(f"approved baseline remains green: {rel}",
           r.returncode == 0 and expected in r.stdout, r.stdout[-180:].strip())
+phase_f = run([sys.executable, "tools/validate_phase_f.py"])
+check("Phase F projection and risk-layer contracts pass",
+      all(token in phase_f.stdout for token in (
+          "[PASS] mapper derives aligned slope/roughness/crater/uncertainty layers",
+          "[PASS] semantic layers age, decay, clear, and confidence-gate cells",
+          "[PASS] mapper bounds memory and recenters coverage")), phase_f.stdout[-180:].strip())
 
 launch = read("scripts/launch-g.sh")
 wrapper = read("launch-g")
 cost = read("scripts/terrain_cost_mapper.py")
+terrain_costs = read("scripts/terrain_costs.py")
+geometry_mapper = read("scripts/semantic_terrain_mapper.py")
 rviz = read("rviz/phase_g.rviz")
 docs = read("docs/phase-7-launch-g.md")
 noncomment = "\n".join(line for line in launch.splitlines()
@@ -111,12 +124,12 @@ check("Phase G does not invoke an earlier launcher", "launch-f" not in noncommen
 check("Phase G has its own evidence directory", "phase-g-launch-g" in launch and
       "phase-f-launch-f" not in noncomment)
 check("Phase G is symlink-safe", 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' in launch)
-check("Phase G uses process groups", "setsid" in launch and "stop_group()" in launch)
+check("Phase G uses process groups", "setsid" in launch and shared_shutdown(launch))
 check("Phase G has a shutdown trap", "trap 'shutdown 130' INT TERM" in launch)
 check("Phase G cleans cost mapper process", "COST_PID" in launch and
       'stop_group "$COST_PID"' in launch)
 check("Phase G reports its clean shutdown", "Launch G environment cleanly closed." in launch)
-check("Phase G has bounded shutdown", 'kill -KILL -"$pid"' in launch)
+check("Phase G has bounded shutdown", shared_shutdown(launch))
 check("Phase G preserves semantic mapper", 'MAPPER_PATH="$REPO_DIR/scripts/semantic_terrain_mapper.py"' in launch)
 check("Phase G preserves the Phase D planner", 'NAV_PATH="$REPO_DIR/scripts/astar_navigation.py"' in launch)
 check("Phase G preserves one SLAM system", "ros2 launch slam_toolbox online_async_launch.py" in launch and
@@ -127,6 +140,19 @@ check("Phase G preserves one SLAM system", "ros2 launch slam_toolbox online_asyn
 check("cost mapper is a ROS node", "class TerrainCostMapper(Node)" in cost)
 check("cost mapper consumes semantic map", "OccupancyGrid, self.semantic_topic" in cost and
       "_semantic_callback" in cost)
+check("cost mapper consumes aligned terrain geometry risks",
+      all(f'"{layer}"' in cost for layer in
+          ("slope", "roughness", "crater_risk", "uncertainty")) and
+      "semantic_geometry.compatible" in cost and "WAITING_FOR_SYNCED" in cost)
+check("geometry layers include elevation-derived slope roughness and crater risk",
+      "derive_terrain_layers" in geometry_mapper and
+      all(name in read("scripts/terrain_geometry.py") for name in
+          ("slope", "roughness", "crater_risk", "uncertainty")))
+check("terrain cost fusion keeps unknown/shadow out of obstacle class",
+      "if value <= 0" in terrain_costs and "unknown_cost" in terrain_costs and
+      "if value >= 100" in terrain_costs)
+check("terrain risk scores are weighted into soft traversal costs",
+      "weights" in terrain_costs and "risk = sum(" in terrain_costs)
 check("cost mapper publishes cost map", "self.cost_pub.publish" in cost and
       "OccupancyGrid" in cost)
 check("cost mapper defines terrain cost", "terrain_cost" in cost and "TERRAIN_VALUE" in cost)
@@ -151,6 +177,11 @@ check("Phase G validates cost map type", 'type_ok "type cost map nav_msgs/Occupa
 check("Phase G validates cost status type", 'type_ok "type cost map status std_msgs/String"' in launch)
 check("Phase G validates real cost messages", 'topic_ok "topic /lunabot/terrain/cost_map"' in launch and
       'topic_ok "topic /lunabot/terrain/cost_map/status"' in launch)
+check("Phase G validates semantic geometry layers",
+      all(layer in launch for layer in ("slope", "roughness", "crater_risk", "uncertainty")))
+check("Phase G records geometry samples for evidence",
+      '"$EVIDENCE_DIR/semantic_${layer}_sample.txt"' in launch and
+      "for layer in slope roughness crater_risk uncertainty" in launch)
 check("Phase G validates cost content", "COST_MAP_PASS" in launch and
       "cost map content: PASS" in launch)
 check("Phase G records cost evidence", "cost_map_sample.txt" in launch and
@@ -176,6 +207,7 @@ for phrase, name in [
     ("COST_MAP_PASS", "cost acceptance"),
     ("/lunabot/terrain/cost_map", "cost map output"),
     ("semantic map", "semantic input"),
+    ("uncertainty", "geometry risk fusion"),
     ("inflation", "obstacle inflation"),
     ("clean relaunch", "relaunch"),
     ("Phase H", "Phase H gate"),

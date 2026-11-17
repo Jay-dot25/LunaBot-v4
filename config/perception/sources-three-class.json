@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "target_classes": [
+    "regolith",
+    "rock",
+    "shadow"
+  ],
+  "selected_sources": [
+    {
+      "source_id": "nasa-polar-original",
+      "title": "NASA POLAR Stereo Dataset",
+      "url": "https://ti.arc.nasa.gov/dataset/IRG_PolarDB/",
+      "source_version": "12-terrain primary dataset; source page accessed 2026-11-04",
+      "license": "CC0-1.0",
+      "license_basis": "NASA Science Data Portal policy: NASA-led mission data are CC0 unless the file carries a restrictive notice or license.",
+      "status": "approved_with_file_notice_check",
+      "file_notice_check_required": true,
+      "usable_for": [
+        "regolith",
+        "rock",
+        "shadow"
+      ],
+      "attribution": "Cite the POLAR Stereo Dataset and NASA Ames Intelligent Robotics Group.",
+      "limitations": [
+        "Physical lunar analog, not lunar flight imagery.",
+        "Bedrock is not an annotated POLAR class."
+      ],
+      "group_namespace": "nasa-polar-terrain"
+    },
+    {
+      "source_id": "polar-sim-labels",
+      "title": "POLAR-Sim segmentation labels and terrain assets",
+      "url": "https://doi.org/10.5061/dryad.ksn02v7hf",
+      "source_version": "2025-07-16 Dryad release",
+      "license": "CC0-1.0",
+      "license_basis": "Dryad data release policy; dataset is published on Dryad and reports 12 terrain experiments.",
+      "status": "approved",
+      "file_notice_check_required": false,
+      "usable_for": [
+        "regolith",
+        "rock",
+        "shadow"
+      ],
+      "attribution": "Cite Chen et al. (2025), POLAR-Sim, DOI 10.5061/dryad.ksn02v7hf.",
+      "limitations": [
+        "Existing masks do not contain target crater or bedrock labels; crater masks require new geometry-supported annotation."
+      ],
+      "group_namespace": "nasa-polar-terrain"
+    },
+    {
+      "source_id": "marsseg-msl-bedrock-pretrain",
+      "title": "Mars-Bench MSL terrain segmentation mirror",
+      "url": "https://huggingface.co/datasets/gremlin97/mars-seg_msl",
+      "source_version": "Dataset card version 1.0, published 2025-05-11",
+      "license": "CC-BY-4.0",
+      "license_basis": "Dataset card declares CC-BY-4.0 and lists bedrock, gravel/sand/soil, rock, shadow, sky/mountains, and track.",
+      "status": "approved_for_training_only",
+      "file_notice_check_required": true,
+      "usable_for": [
+        "regolith",
+        "rock",
+        "shadow"
+      ],
+      "attribution": "Credit the dataset uploader and cite the original Mars-Bench/AI4Mars sources as documented with the acquired version.",
+      "limitations": [
+        "Mars imagery is cross-domain training data only; it must not enter lunar/analog validation or test splits.",
+        "Verify attribution and upstream data terms against the exact downloaded revision before ingestion."
+      ]
+    },
+    {
+      "source_id": "baseprod-bedrock-evaluation",
+      "title": "BASEPROD labeled RGB/mask subset",
+      "url": "https://zenodo.org/records/20289198",
+      "source_version": "1.0.1; Zenodo record 20289198",
+      "license": "CC-BY-4.0",
+      "license_basis": "Pinned Zenodo API record explicitly declares cc-by-4.0; acquired members verified against ZIP CRC and retained SHA-256.",
+      "status": "approved_with_file_notice_check",
+      "file_notice_check_required": true,
+      "usable_for": [
+        "regolith",
+        "rock"
+      ],
+      "attribution": "Castilla Arquillo, Perez del Pulgar Mancebo, Gerdes, Garcia-Cerezo and Martinez Petersen. Fusion of Color, Depth, and Thermal Modalities for Rover Navigation in Unstructured Environments. DOI 10.5281/zenodo.20289198. Also cite Gerdes et al. (2024), DOI 10.1038/s41597-024-03881-1. Canonical remapping is a modification.",
+      "limitations": [
+        "Mars analogue, not lunar flight imagery.",
+        "Only 48 uniformly sampled pairs; all Bardenas views confined to test.",
+        "Only source bedrock, sandy and rock mapped; remaining classes ignored."
+      ],
+      "group_namespace": "baseprod-bardenas-site"
+    },
+    {
+      "source_id": "apollo15-bedrock-evaluation",
+      "title": "NASA Apollo 15 Hadley Rille outcrop photographs",
+      "url": "https://apollojournals.org/alsj/a15/images15.html",
+      "source_version": "AS15-89-12115HR and AS15-89-12157HR",
+      "license": "CC0-1.0",
+      "license_basis": "NASA-led mission data follow NASA Science Data Portal CC0 policy absent a restrictive notice. The archive explicitly asserts no copyright in NASA photographs and requests NASA and scanning credits; reviewed files show landscape only. Captions are separately copyrighted and are not redistributed.",
+      "status": "approved_with_file_notice_check",
+      "file_notice_check_required": true,
+      "usable_for": [
+        "regolith"
+      ],
+      "attribution": "NASA Apollo 15 photographs AS15-89-12115 and AS15-89-12157; scans by Kipp Teague. Conservative pixel annotations added by Codex on behalf of Jay; image hashes and normalized polygon coordinates retained.",
+      "limitations": [
+        "Two 500-mm telephoto frames from one Hadley Rille scene; not rover-scale representative sampling.",
+        "Only conservative illuminated outcrop/regolith patches annotated; all other pixels ignored.",
+        "Entire related scene confined to validation; no optimization on these frames."
+      ],
+      "group_namespace": "apollo15-hadley-rille"
+    },
+    {
+      "source_id": "nasa-polar-traverse-crater-train",
+      "title": "NASA POLAR Traverse exact-frame crater annotations",
+      "url": "https://ti.arc.nasa.gov/dataset/PolarTrav/",
+      "source_version": "2023 release; View1 Traverse1 positions 0,2,4,6,8,10 m, left camera, 25ms",
+      "license": "CC0-1.0",
+      "license_basis": "NASA-led scientific data policy; source-page and acquired image inspection found no restrictive notice. Original photographs only; paper figures retained as internal review aids.",
+      "status": "approved_for_training_only",
+      "file_notice_check_required": true,
+      "usable_for": [
+        "regolith",
+        "shadow"
+      ],
+      "attribution": "Hansen, Wong and Fong, NASA Ames, POLAR Traverse Dataset (2023). Partial annotations by Codex on behalf of Jay; source member CRC and SHA-256, polygons and derived crop lineage retained.",
+      "limitations": [
+        "Six views of one constructed scene; all views and derivatives confined to training.",
+        "Only reviewed 25ms frames annotated; no propagation to other exposures.",
+        "Uncertain, underexposed and saturated wall/soil pixels ignored."
+      ],
+      "group_namespace": "nasa-sservi-traverse-2023"
+    },
+    {
+      "source_id": "roboflow-combined-polygons",
+      "title": "roboflow-combined-polygons",
+      "status": "user_supplied_training_only",
+      "limitations": [
+        "Not held-out lunar qualification evidence."
+      ]
+    },
+    {
+      "source_id": "lunarseg-obstacles",
+      "title": "lunarseg-obstacles",
+      "status": "user_supplied_training_only",
+      "limitations": [
+        "Not held-out lunar qualification evidence."
+      ]
+    },
+    {
+      "source_id": "ai4mars-nav-training",
+      "title": "ai4mars-nav-training",
+      "status": "user_supplied_training_only",
+      "limitations": [
+        "Not held-out lunar qualification evidence."
+      ]
+    }
+  ],
+  "evaluation_additions": {
+    "scope": "Bounded prototype evaluation only; additions do not establish broad lunar bedrock accuracy.",
+    "provenance_report": ".build/p502-bedrock-eval-v2/report.json"
+  },
+  "rejected_candidates": [
+    {
+      "source_id": "lusnar",
+      "url": "https://github.com/zqyu9/LuSNAR-dataset",
+      "reason": "The repository states MIT while also limiting commercial use to author contact; its linked LICENSE returns 404. It also lacks target bedrock and shadow categories and reports 108 GB, above the current laptop data budget."
+    },
+    {
+      "source_id": "ai4mars-zenodo",
+      "url": "https://zenodo.org/records/15995036",
+      "reason": "NASA catalog says license not specified while the Zenodo record reports Copyright 2022 IEEE; do not ingest until the rights holder publishes an unambiguous grant."
+    }
+  ]
+}

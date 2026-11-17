@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "mask_encoding": "uint8 indexed PNG",
+  "ignore_id": 255,
+  "classes": [
+    {"id": 0, "name": "regolith", "definition": "Visible loose or granular surface material."},
+    {"id": 1, "name": "bedrock", "definition": "Continuous exposed, consolidated substrate with visible rock structure."},
+    {"id": 2, "name": "rock", "definition": "Discrete positive-relief rock, cobble, or boulder."},
+    {"id": 3, "name": "crater", "definition": "Geometrically supported negative-relief impact depression and its inner rim."},
+    {"id": 4, "name": "shadow", "definition": "Cast shadow region, independent of the underlying surface material."}
+  ],
+  "occlusion_precedence": ["shadow", "crater", "rock", "bedrock", "regolith"]
+}

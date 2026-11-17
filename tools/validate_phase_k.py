@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from static_contracts import shared_shutdown
 """Static Phase K gate: runtime testing and evaluation.
 
 This validator checks the independent launch-k contract and the approved
@@ -125,7 +126,7 @@ check("Phase K is independent of launch-j", "launch-j" not in noncomment and
 check("Phase K has its own evidence directory", "phase-k-launch-k" in launch and
       "phase-j-launch-j" not in noncomment)
 check("Phase K is symlink-safe", 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' in launch)
-check("Phase K uses process groups", "setsid" in launch and "stop_group()" in launch)
+check("Phase K uses process groups", "setsid" in launch and shared_shutdown(launch))
 check("Phase K has a shutdown trap", "trap 'shutdown 130' INT TERM" in launch)
 check("Phase K cleans evaluator and replan monitor", "EVALUATOR_PID" in launch and
       'stop_group "$EVALUATOR_PID"' in launch and

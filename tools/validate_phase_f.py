@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from static_contracts import shared_shutdown
 """Static Phase F gate: semantic terrain mapping.
 
 This validator checks the independent launch-f contract and the approved
@@ -37,6 +38,9 @@ required = [
     "scripts/wasd_teleop.py", "scripts/control_odometry.py",
     "scripts/odometry_monitor.py", "scripts/astar_navigation.py",
     "scripts/terrain_segmentation.py", "scripts/semantic_terrain_mapper.py",
+    "scripts/semantic_projection.py", "scripts/semantic_layers.py",
+    "scripts/terrain_geometry.py", "tests/test_semantic_projection.py",
+    "tests/test_semantic_layers.py", "tests/test_terrain_geometry.py",
     "config/slam_toolbox_phase_c.yaml",
     "rviz/phase_a.rviz", "rviz/phase_b.rviz", "rviz/phase_c.rviz",
     "rviz/phase_d.rviz", "rviz/phase_e.rviz", "rviz/phase_f.rviz",
@@ -58,7 +62,10 @@ for rel in ["launch-f", "scripts/launch-f.sh",
     p = ROOT / rel
     check(f"executable: {rel}", p.is_file() and bool(p.stat().st_mode & 0o111))
 
-for rel in ["scripts/semantic_terrain_mapper.py", "scripts/terrain_segmentation.py",
+for rel in ["scripts/semantic_terrain_mapper.py", "scripts/semantic_projection.py",
+            "scripts/semantic_layers.py", "tests/test_semantic_layers.py",
+            "scripts/terrain_geometry.py", "tests/test_terrain_geometry.py",
+            "tests/test_semantic_projection.py", "scripts/terrain_segmentation.py",
             "scripts/astar_navigation.py", "scripts/control_odometry.py",
             "scripts/odometry_monitor.py", "tools/validate_phase_a.py",
             "tools/validate_phase_b.py", "tools/validate_phase_c.py",
@@ -84,7 +91,7 @@ for rel, kind in [("src/lunabot_gazebo/worlds/lunar_world.sdf", "world"),
     except Exception as exc:
         check(f"{kind} SDF well-formed", False, str(exc))
 
-for rel, expected in [("tools/validate_phase_a.py", "80/80"),
+for rel, expected in [("tools/validate_phase_a.py", "96/96"),
                       ("tools/validate_phase_b.py", "103/103"),
                       ("tools/validate_phase_c.py", "133/133"),
                       ("tools/validate_phase_d.py", "152/152"),
@@ -111,12 +118,12 @@ check("Phase F does not invoke an earlier launcher", "launch-e" not in noncommen
 check("Phase F has its own evidence directory", "phase-f-launch-f" in launch and
       "phase-e-launch-e" not in noncomment)
 check("Phase F is symlink-safe", 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' in launch)
-check("Phase F uses process groups", "setsid" in launch and "stop_group()" in launch)
+check("Phase F uses process groups", "setsid" in launch and shared_shutdown(launch))
 check("Phase F has a shutdown trap", "trap 'shutdown 130' INT TERM" in launch)
 check("Phase F cleans mapper process", "MAPPER_PID" in launch and
       'stop_group "$MAPPER_PID"' in launch)
 check("Phase F reports its clean shutdown", "Launch F environment cleanly closed." in launch)
-check("Phase F has bounded shutdown", 'kill -KILL -"$pid"' in launch)
+check("Phase F has bounded shutdown", shared_shutdown(launch))
 check("Phase F preserves Phase E perception", 'PERCEPTION_PATH="$REPO_DIR/scripts/terrain_segmentation.py"' in launch)
 check("Phase F preserves the Phase D planner", 'NAV_PATH="$REPO_DIR/scripts/astar_navigation.py"' in launch)
 check("Phase F preserves one SLAM system", "ros2 launch slam_toolbox online_async_launch.py" in launch and
@@ -127,21 +134,42 @@ check("Phase F preserves one SLAM system", "ros2 launch slam_toolbox online_asyn
 check("mapper is a ROS node", "class SemanticTerrainMapper(Node)" in mapper)
 check("mapper consumes the Phase E mask", "Image, self.mask_topic" in mapper and
       "_mask_callback" in mapper)
+check("mapper consumes synchronized confidence", "Image, self.confidence_topic" in mapper and
+      "confidence_stamp_ns" in mapper and "confidence_image=confidence" in mapper)
+check("Phase E publishes confidence samples", "self.confidence_pub.publish" in read("scripts/terrain_segmentation.py") and
+      "confidence_topic" in read("scripts/terrain_segmentation.py"))
 check("mapper consumes depth", "Image, self.depth_topic" in mapper and
       "_depth_callback" in mapper)
-check("mapper decodes supported depth encodings", "16uc1" in mapper and
-      "32fc1" in mapper and "_depth_at" in mapper)
-check("mapper uses existing map TF", "lookup_transform" in mapper and
-      "self.map_frame" in mapper and "self.base_frame" in mapper)
-check("mapper projects camera bearing", "horizontal_fov" in mapper and
-      "bearing" in mapper)
-check("mapper accumulates a fixed grid", "self.cells" in mapper and
-      "_grid_index" in mapper)
-check("mapper publishes OccupancyGrid", "OccupancyGrid" in mapper and
-      "self.map_pub.publish" in mapper)
+check("mapper consumes RGB/depth CameraInfo", "CameraInfo, self.rgb_info_topic" in mapper and
+      "CameraInfo, self.depth_info_topic" in mapper)
+projection = read("scripts/semantic_projection.py")
+check("mapper decodes 16/32/64-bit depth in metres", "decode_depth_buffer" in mapper and
+      all(token in projection for token in ("32fc1", "64fc1", "16uc1")))
+check("mapper uses calibrated focal lengths/principal points", "CameraIntrinsics.from_k" in mapper and
+      "horizontal_fov" not in mapper)
+check("mapper uses exact-time map TF and two-time RGB registration", "lookup_transform(target, source, stamp)" in mapper and
+      "lookup_transform_full" in mapper and "Time()" not in mapper)
+check("mapper enforces camera timestamp skew and input age", "max_sync_skew_ns" in mapper and
+      "max_input_age_ns" in mapper and "WAITING_FOR_SYNC" in mapper)
+check("projection z-buffers RGB occlusion", "np.minimum.at" in projection and
+      "WAITING_FOR_TF" in projection and "project_synced_frame" in mapper)
+layers = read("scripts/semantic_layers.py")
+check("mapper bounds memory and recenters coverage", "self.grid.recenter" in mapper and
+      "memory_bytes" in mapper and "np.zeros((height, width)" in layers)
+check("semantic layers age, decay, clear, and confidence-gate cells",
+      all(token in layers for token in ("half_life_ns", "ttl_ns", "min_confidence",
+                                        "confidence_data", "age_data")))
+check("mapper publishes semantic/confidence/age occupancy grids",
+      "self.map_pub" in mapper and "self.confidence_map_pub" in mapper and
+      "self.age_map_pub" in mapper and "OccupancyGrid" in mapper and
+      all(topic in mapper for topic in ("semantic_map/confidence", "semantic_map/age")))
+check("mapper derives aligned slope/roughness/crater/uncertainty layers",
+      "derive_terrain_layers" in mapper and
+      all(f'"{layer}"' in mapper for layer in
+          ("slope", "roughness", "crater_risk", "uncertainty")))
 check("mapper defines semantic values", "TERRAIN = 1" in mapper and
       "OBSTACLE = 2" in mapper and "25" in mapper and "100" in mapper)
-check("mapper gives obstacles precedence", "Obstacle evidence dominates" in mapper)
+check("mapper gives obstacles precedence", "value == OBSTACLE or index not in cells" in projection)
 check("mapper publishes auditable status", "SEMANTIC_MAP_PASS" in mapper and
       "self.status_pub" in mapper)
 check("mapper map/status are late-join safe", mapper.count("TRANSIENT_LOCAL") >= 2 and
@@ -157,6 +185,9 @@ check("Phase F validates real semantic messages", 'topic_ok "topic /lunabot/terr
       'topic_ok "topic /lunabot/terrain/semantic_map/status"' in launch)
 check("Phase F validates semantic content", "SEMANTIC_MAP_PASS" in launch and
       "semantic map content: PASS" in launch)
+check("Phase F validates confidence and age layer interfaces",
+      all(topic in launch for topic in ("segmentation_confidence",
+                                        "semantic_map/confidence", "semantic_map/age")))
 check("Phase F records semantic evidence", "semantic_map_sample.txt" in launch and
       "semantic_map_status.txt" in launch and "semantic_mapping.log" in launch)
 check("Phase F retains segmentation content gate", "SEGMENTATION_PASS" in launch and
@@ -179,7 +210,8 @@ for phrase, name in [
     ("EVIDENCE=1 DEMO=1 HEADLESS=1 ~/launch-f", "automated command"),
     ("SEMANTIC_MAP_PASS", "semantic acceptance"),
     ("/lunabot/terrain/semantic_map", "semantic map output"),
-    ("map -> chassis", "localization input"),
+    ("CameraInfo", "calibrated camera input"),
+    ("depth optical", "camera TF input"),
     ("semantic values", "legend"),
     ("clean relaunch", "relaunch"),
     ("Phase G", "Phase G gate"),

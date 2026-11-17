@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "scope": "three_class_inference",
+  "class_config": "config/perception/classes-three-class.json",
+  "classes": [
+    {"id": 0, "name": "regolith", "map_label": "terrain"},
+    {"id": 1, "name": "rock", "map_label": "obstacle"},
+    {"id": 2, "name": "shadow", "map_label": "unknown"},
+    {"id": 255, "name": "unknown", "map_label": "unknown"}
+  ],
+  "model_package_archive": "evidence/runs/20261112-p503/P5-03/p502-threeclass-runtime.zip",
+  "runtime_module": "scripts/p502_threeclass_inference.py",
+  "runtime_mode": "torchscript",
+  "provider": "auto",
+  "max_input_age_s": 1.0,
+  "source_ontology": "config/perception/classes.json",
+  "source_masks_are_preserved": true,
+  "notes": "Five-class source masks remain canonical training provenance. Active runtime output is regolith/rock/shadow; crater pixels map to ignore during derivation and crater risk remains geometric."
+}

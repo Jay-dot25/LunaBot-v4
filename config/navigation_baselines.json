@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "description": "Deterministic occupancy-grid route baselines for the preserved A* planner. These are planner-level scenarios, not Gazebo mission routes.",
+  "resolution_m": 0.1,
+  "inflation_radius_m": 0.25,
+  "occupied_threshold": 65,
+  "unknown_is_obstacle": true,
+  "scenarios": [
+    {
+      "route_id": "wall_gap_detour",
+      "width": 40,
+      "height": 40,
+      "start": [
+        3,
+        5
+      ],
+      "goal": [
+        36,
+        5
+      ],
+      "expected_success": true,
+      "obstacles": [
+        [
+          20,
+          0,
+          20,
+          25
+        ]
+      ]
+    },
+    {
+      "route_id": "bounded_corridor",
+      "width": 40,
+      "height": 20,
+      "start": [
+        3,
+        9
+      ],
+      "goal": [
+        36,
+        9
+      ],
+      "expected_success": true,
+      "obstacles": [
+        [
+          0,
+          0,
+          39,
+          0
+        ],
+        [
+          0,
+          19,
+          39,
+          19
+        ]
+      ]
+    },
+    {
+      "route_id": "alternating_barriers",
+      "width": 40,
+      "height": 25,
+      "start": [
+        3,
+        12
+      ],
+      "goal": [
+        36,
+        12
+      ],
+      "expected_success": true,
+      "obstacles": [
+        [
+          12,
+          0,
+          15,
+          16
+        ],
+        [
+          24,
+          8,
+          27,
+          24
+        ]
+      ]
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "map": {
+    "id": "lunar_p803_roundtrip",
+    "frame_id": "map",
+    "metadata_path": "../evidence/runs/p803-fixed-r64/phase-l/phase_l_map.yaml",
+    "metadata_sha256": "0f4f28f85d1bf0872266ae2dd81186d40a90975bf7442bdd830b97ed23123078",
+    "image_sha256": "9c5acf88ce128e9f86730cae1cc6399071d987a30f2d968906094a51e14df2f9",
+    "qualification": "P8-03 live map pilot; site cells known and free",
+    "qualification_run": "p803-fixed-r64",
+    "reference_map_to_odom": {
+      "x": 0.0,
+      "y": 2.1895288505075267e-47,
+      "yaw": 0.0
+    }
+  },
+  "navigation_frame": "map",
+  "waypoints": [
+    {
+      "id": "habitat",
+      "name": "Habitat",
+      "map_id": "lunar_p803_roundtrip",
+      "frame_id": "map",
+      "pose": {
+        "x": 0.0,
+        "y": 6.0,
+        "yaw": 0.0
+      },
+      "binding_status": "bound",
+      "binding_reason": "Derived from configured world site and measured map->odom transform; saved-map goal cell is known free."
+    },
+    {
+      "id": "science",
+      "name": "Science",
+      "map_id": "lunar_p803_roundtrip",
+      "frame_id": "map",
+      "pose": {
+        "x": 3.3,
+        "y": 2.5,
+        "yaw": 0.0
+      },
+      "binding_status": "bound",
+      "binding_reason": "Derived from configured world site and measured map->odom transform; saved-map goal cell is known free."
+    }
+  ]
+}

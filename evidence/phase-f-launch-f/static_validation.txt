@@ -16,6 +16,12 @@
 [PASS] file exists: scripts/astar_navigation.py
 [PASS] file exists: scripts/terrain_segmentation.py
 [PASS] file exists: scripts/semantic_terrain_mapper.py
+[PASS] file exists: scripts/semantic_projection.py
+[PASS] file exists: scripts/semantic_layers.py
+[PASS] file exists: scripts/terrain_geometry.py
+[PASS] file exists: tests/test_semantic_projection.py
+[PASS] file exists: tests/test_semantic_layers.py
+[PASS] file exists: tests/test_terrain_geometry.py
 [PASS] file exists: config/slam_toolbox_phase_c.yaml
 [PASS] file exists: rviz/phase_a.rviz
 [PASS] file exists: rviz/phase_b.rviz
@@ -42,6 +48,12 @@
 [PASS] executable: scripts/semantic_terrain_mapper.py
 [PASS] executable: tools/validate_phase_f.py
 [PASS] Python syntax: scripts/semantic_terrain_mapper.py
+[PASS] Python syntax: scripts/semantic_projection.py
+[PASS] Python syntax: scripts/semantic_layers.py
+[PASS] Python syntax: tests/test_semantic_layers.py
+[PASS] Python syntax: scripts/terrain_geometry.py
+[PASS] Python syntax: tests/test_terrain_geometry.py
+[PASS] Python syntax: tests/test_semantic_projection.py
 [PASS] Python syntax: scripts/terrain_segmentation.py
 [PASS] Python syntax: scripts/astar_navigation.py
 [PASS] Python syntax: scripts/control_odometry.py
@@ -66,21 +78,21 @@
 [PASS] world SDF well-formed
 [PASS] model SDF well-formed
 [PASS] approved baseline remains green: tools/validate_phase_a.py - ==
-RESULT: 80/80 checks passed - ALL PASS
+RESULT: 96/96 checks passed - ALL PASS
 ============================================================
-report: /tmp/lunabot-phase-a/evidence/phase-a-launch-a/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-a-launch-a/static_validation.txt
 [PASS] approved baseline remains green: tools/validate_phase_b.py - RESULT: 103/103 checks passed - ALL PASS
 ============================================================
-report: /tmp/lunabot-phase-a/evidence/phase-b-launch-b/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-b-launch-b/static_validation.txt
 [PASS] approved baseline remains green: tools/validate_phase_c.py - ULT: 133/133 checks passed - ALL PASS
 ================================================================
-report: /tmp/lunabot-phase-a/evidence/phase-c-launch-c/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-c-launch-c/static_validation.txt
 [PASS] approved baseline remains green: tools/validate_phase_d.py - ULT: 152/152 checks passed - ALL PASS
 ================================================================
-report: /tmp/lunabot-phase-a/evidence/phase-d-launch-d/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-d-launch-d/static_validation.txt
 [PASS] approved baseline remains green: tools/validate_phase_e.py - ULT: 112/112 checks passed - ALL PASS
 ================================================================
-report: /tmp/lunabot-phase-a/evidence/phase-e-launch-e/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-e-launch-e/static_validation.txt
 [PASS] root launch-f resolves its real path
 [PASS] root launch-f execs scripts/launch-f.sh
 [PASS] Phase F does not invoke an earlier launcher
@@ -96,12 +108,19 @@ report: /tmp/lunabot-phase-a/evidence/phase-e-launch-e/static_validation.txt
 [PASS] Phase F preserves one SLAM system
 [PASS] mapper is a ROS node
 [PASS] mapper consumes the Phase E mask
+[PASS] mapper consumes synchronized confidence
+[PASS] Phase E publishes confidence samples
 [PASS] mapper consumes depth
-[PASS] mapper decodes supported depth encodings
-[PASS] mapper uses existing map TF
-[PASS] mapper projects camera bearing
-[PASS] mapper accumulates a fixed grid
-[PASS] mapper publishes OccupancyGrid
+[PASS] mapper consumes RGB/depth CameraInfo
+[PASS] mapper decodes 16/32/64-bit depth in metres
+[PASS] mapper uses calibrated focal lengths/principal points
+[PASS] mapper uses exact-time map TF and two-time RGB registration
+[PASS] mapper enforces camera timestamp skew and input age
+[PASS] projection z-buffers RGB occlusion
+[PASS] mapper bounds memory and recenters coverage
+[PASS] semantic layers age, decay, clear, and confidence-gate cells
+[PASS] mapper publishes semantic/confidence/age occupancy grids
+[PASS] mapper derives aligned slope/roughness/crater/uncertainty layers
 [PASS] mapper defines semantic values
 [PASS] mapper gives obstacles precedence
 [PASS] mapper publishes auditable status
@@ -113,6 +132,7 @@ report: /tmp/lunabot-phase-a/evidence/phase-e-launch-e/static_validation.txt
 [PASS] Phase F validates semantic status type
 [PASS] Phase F validates real semantic messages
 [PASS] Phase F validates semantic content
+[PASS] Phase F validates confidence and age layer interfaces
 [PASS] Phase F records semantic evidence
 [PASS] Phase F retains segmentation content gate
 [PASS] Phase F retains A* goal gate
@@ -126,10 +146,11 @@ report: /tmp/lunabot-phase-a/evidence/phase-e-launch-e/static_validation.txt
 [PASS] docs contain automated command
 [PASS] docs contain semantic acceptance
 [PASS] docs contain semantic map output
-[PASS] docs contain localization input
+[PASS] docs contain calibrated camera input
+[PASS] docs contain camera TF input
 [PASS] docs contain legend
 [PASS] docs contain relaunch
 [PASS] docs contain Phase G gate
 [PASS] validator is honest about runtime
 
-RESULT: 122/122 checks passed
+RESULT: 143/143 checks passed

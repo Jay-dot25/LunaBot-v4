@@ -11,6 +11,7 @@ It never publishes velocity and cannot compete with the Phase I follower.
 from __future__ import annotations
 
 import math
+import time
 from typing import Optional
 
 import rclpy
@@ -77,6 +78,8 @@ class DynamicReplanMonitor(Node):
         self.last_y: Optional[float] = None
         self.last_planner_status = ""
         self.obstacle_seen = False
+        self.obstacle_detected_monotonic: Optional[float] = None
+        self.obstacle_replan_latency_ms: Optional[float] = None
         self.last_status = ""
         self.passed = False
         self.publish_status("DYNAMIC_REPLAN_WAITING_FOR_PLAN")
@@ -99,7 +102,10 @@ class DynamicReplanMonitor(Node):
         self.last_planner_status = msg.data
 
     def _obstacle_callback(self, msg: String) -> None:
-        self.obstacle_seen = self.obstacle_seen or "OBSTACLE_DETECTED" in msg.data
+        if "OBSTACLE_DETECTED" in msg.data:
+            self.obstacle_seen = True
+            if self.obstacle_detected_monotonic is None:
+                self.obstacle_detected_monotonic = time.monotonic()
         self._evaluate()
 
     def _odom_callback(self, msg: Odometry) -> None:
@@ -136,9 +142,17 @@ class DynamicReplanMonitor(Node):
         if signature != self.last_signature:
             self.revisions += 1
             self.last_signature = signature
+            if (self.obstacle_detected_monotonic is not None and
+                    self.obstacle_replan_latency_ms is None):
+                self.obstacle_replan_latency_ms = max(
+                    0.0, (time.monotonic() -
+                          self.obstacle_detected_monotonic) * 1000.0)
             self.publish_status(
                 f"DYNAMIC_REPLAN_UPDATE revision={self.revisions} "
-                f"cells={len(signature)} motion={self.total_motion:.2f}")
+                f"cells={len(signature)} motion={self.total_motion:.2f}" +
+                (f" obstacle_replan_latency_ms="
+                 f"{self.obstacle_replan_latency_ms:.1f}"
+                 if self.obstacle_replan_latency_ms is not None else ""))
         self._evaluate()
 
     def _evaluate(self) -> None:
@@ -153,6 +167,10 @@ class DynamicReplanMonitor(Node):
         if self.require_obstacle and not self.obstacle_seen:
             self.publish_status("DYNAMIC_REPLAN_WAITING_FOR_OBSTACLE")
             return
+        if (self.require_obstacle and
+                self.obstacle_replan_latency_ms is None):
+            self.publish_status("DYNAMIC_REPLAN_WAITING_FOR_OBSTACLE_REPLAN")
+            return
         if self.revisions < self.minimum_revisions:
             self.publish_status(
                 f"DYNAMIC_REPLAN_WAITING_FOR_UPDATE revisions={self.revisions}/"
@@ -166,7 +184,10 @@ class DynamicReplanMonitor(Node):
         self.publish_status(
             f"DYNAMIC_REPLAN_PASS revisions={self.revisions} "
             f"motion={self.total_motion:.2f} obstacle={int(self.obstacle_seen)} "
-            f"planner={self.last_planner_status}")
+            + (f"obstacle_replan_latency_ms="
+               f"{self.obstacle_replan_latency_ms:.1f} "
+               if self.obstacle_replan_latency_ms is not None else "")
+            + f"planner={self.last_planner_status}")
 
 
 def main(args=None) -> None:
@@ -176,6 +197,9 @@ def main(args=None) -> None:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except Exception:
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
         if rclpy.ok():

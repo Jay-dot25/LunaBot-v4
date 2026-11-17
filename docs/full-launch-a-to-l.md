@@ -200,7 +200,8 @@ Each launcher performs some or all of the following:
 | `src/lunabot_gazebo/worlds/lunar_world.sdf` | Lunar gravity, terrain, habitat, equipment, rock, physical forward obstacle, horizon catch plane, Gazebo systems |
 | `src/lunabot_gazebo/models/lunabot_v4/model.sdf` | Rover body, six wheels, rocker/bogie joints, mast, RGB camera, depth camera, LiDAR, IMU, DiffDrive, joint controllers |
 | `src/lunabot_gazebo/worlds/meshes/lunar_terrain.obj` | High-detail terrain visual mesh |
-| `src/lunabot_gazebo/worlds/meshes/lunar_terrain_collision.obj` | Lower-detail collision mesh for stable simulation |
+| `src/lunabot_gazebo/worlds/meshes/lunar_terrain_collision.obj` | 4 m lower-detail collision mesh for distant context, with a mission-area opening |
+| `src/lunabot_gazebo/worlds/meshes/lunar_terrain_mission_collision.obj` | 1 m detailed collision patch across the 40 m arena plus a 6 m margin |
 | `config/slam_toolbox_phase_c.yaml` | Single approved `slam_toolbox` configuration |
 | `rviz/phase_a.rviz` ... `rviz/phase_l.rviz` | Phase-specific RViz layouts and topic displays |
 

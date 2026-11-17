@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "gate_id": "p502-three-class-v1-20261112",
+  "scope": "P5-02 three-class engineering acceptance on the full canonical 2026-11-10 training corpus with existing scene-isolated validation and test assignments.",
+  "minimum_miou": 0.5,
+  "minimum_per_class_iou": {
+    "regolith": 0.25,
+    "rock": 0.25,
+    "shadow": 0.25
+  }
+}

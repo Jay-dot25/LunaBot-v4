@@ -31,7 +31,7 @@ WORLD_PATH="$WORLD_DIR/lunar_world.sdf"
 MODEL_PATH="$REPO_DIR/src/lunabot_gazebo/models/lunabot_v4/model.sdf"
 WASD_PATH="$REPO_DIR/scripts/wasd_teleop.py"
 RVIZ_CONFIG="$REPO_DIR/rviz/phase_a.rviz"
-EVIDENCE_DIR="$REPO_DIR/evidence/phase-a-launch-a"
+EVIDENCE_DIR="${EVIDENCE_DIR:-$REPO_DIR/evidence/phase-a-launch-a}"
 LOG_FILE="$EVIDENCE_DIR/last_run.log"
 
 # Deterministic terrain (seed 42) - see evidence/phase-a-launch-a/terrain_stats.txt
@@ -47,6 +47,8 @@ GAZEBO_PID=""
 BRIDGE_PID=""
 RVIZ_PID=""
 TELEOP_PID=""
+CONTROL_PID=""
+HEALTH_PID=""
 TF_PIDS=()
 BRIDGE_PKG=""
 
@@ -55,16 +57,22 @@ mkdir -p "$EVIDENCE_DIR"
 say() { echo "$@"; echo "$@" >> "$LOG_FILE"; }
 log() { echo "$@" >> "$LOG_FILE"; }
 
+# ros2 run creates child processes; each launch below uses setsid.
+# Stop the owned process group rather than only its ros2 wrapper.
+source "$REPO_DIR/scripts/process_helpers.sh"
 shutdown() {
+  local rc="${1:-0}"
   trap - INT TERM
   say ""
   say "------------------------------------------------------------"
   say " Shutting down LunaBot Phase A safely..."
   say "------------------------------------------------------------"
   [ -n "$TELEOP_PID" ] && kill "$TELEOP_PID" 2>/dev/null
-  [ -n "$BRIDGE_PID" ] && kill "$BRIDGE_PID" 2>/dev/null
-  for p in ${TF_PIDS[@]+"${TF_PIDS[@]}"}; do kill "$p" 2>/dev/null; done
-  [ -n "$RVIZ_PID" ] && kill "$RVIZ_PID" 2>/dev/null
+  [ -n "$CONTROL_PID" ] && stop_group "$CONTROL_PID"
+  [ -n "$BRIDGE_PID" ] && stop_group "$BRIDGE_PID"
+  for p in ${TF_PIDS[@]+"${TF_PIDS[@]}"}; do stop_group "$p"; done
+  [ -n "$RVIZ_PID" ] && stop_group "$RVIZ_PID"
+  [ -n "$HEALTH_PID" ] && stop_group "$HEALTH_PID"
   if [ -n "$GAZEBO_PID" ]; then
     kill -TERM -"$GAZEBO_PID" 2>/dev/null || kill -TERM "$GAZEBO_PID" 2>/dev/null
     for _ in $(seq 1 20); do
@@ -86,9 +94,9 @@ shutdown() {
   say "Launch A environment cleanly closed."
   say "Log: $LOG_FILE"
   say "============================================================"
-  exit 0
+  exit "$rc"
 }
-trap shutdown INT TERM
+trap 'shutdown 130' INT TERM
 
 # ------------------------------------------------------------
 # Banner
@@ -108,7 +116,8 @@ echo "[1/10] Checking project files...................."
 missing=0
 for f in "$WORLD_PATH" "$MODEL_PATH" "$WASD_PATH" "$RVIZ_CONFIG" \
          "$WORLD_DIR/meshes/lunar_terrain.obj" \
-         "$WORLD_DIR/meshes/lunar_terrain_collision.obj"; do
+         "$WORLD_DIR/meshes/lunar_terrain_collision.obj" \
+         "$WORLD_DIR/meshes/lunar_terrain_mission_collision.obj"; do
   if [ ! -f "$f" ]; then
     say "      MISSING: $f"
     missing=1
@@ -187,6 +196,8 @@ echo "      clean state: OK"
 log "[3/10] clean state OK"
 
 # ------------------------------------------------------------
+source "$REPO_DIR/scripts/prepare_safety_plugin.sh"
+
 # [4/10] Start Gazebo
 # ------------------------------------------------------------
 echo "[4/10] Starting Gazebo (lunar world)..............."
@@ -196,7 +207,7 @@ export IGN_GAZEBO_RESOURCE_PATH="$GZ_SIM_RESOURCE_PATH"
 
 : > "$EVIDENCE_DIR/gazebo.log"
 if [ "$HEADLESS" = "1" ]; then
-  setsid "$IGN" gazebo -s -v 3 "$WORLD_PATH" >> "$EVIDENCE_DIR/gazebo.log" 2>&1 &
+  setsid "$IGN" gazebo -s -r -v 3 "$WORLD_PATH" >> "$EVIDENCE_DIR/gazebo.log" 2>&1 &
 else
   setsid "$IGN" gazebo -v 3 "$WORLD_PATH" >> "$EVIDENCE_DIR/gazebo.log" 2>&1 &
 fi
@@ -249,14 +260,16 @@ log "[5/10] spawn OK (z=$SPAWN_Z)"
 echo "[6/10] Starting ROS 2 <-> Gazebo bridge............"
 : > "$EVIDENCE_DIR/bridge.log"
 setsid ros2 run "$BRIDGE_PKG" parameter_bridge \
-  "/cmd_vel@geometry_msgs/msg/Twist]$MSGNS.Twist" \
+  "/lunabot/actuator_request@geometry_msgs/msg/Twist]$MSGNS.Twist" \
   "/clock@rosgraph_msgs/msg/Clock[$MSGNS.Clock" \
   "/lunabot/camera/image_raw@sensor_msgs/msg/Image[$MSGNS.Image" \
+  "/lunabot/camera/camera_info@sensor_msgs/msg/CameraInfo[$MSGNS.CameraInfo" \
   "/lunabot/depth/image_raw@sensor_msgs/msg/Image[$MSGNS.Image" \
+  "/lunabot/depth/camera_info@sensor_msgs/msg/CameraInfo[$MSGNS.CameraInfo" \
   "/lunabot/lidar/scan@sensor_msgs/msg/LaserScan[$MSGNS.LaserScan" \
   "/lunabot/imu@sensor_msgs/msg/Imu[$MSGNS.IMU" \
   "/lunabot/odom@nav_msgs/msg/Odometry[$MSGNS.Odometry" \
-  "/lunabot/joint_states@sensor_msgs/JointState[$MSGNS.Model" \
+  "/lunabot/joint_states@sensor_msgs/msg/JointState[$MSGNS.Model" \
   "/tf@tf2_msgs/msg/TFMessage[$MSGNS.Pose_V" \
   "/lunabot/steer/front_left@std_msgs/msg/Float64]$MSGNS.Double" \
   "/lunabot/steer/front_right@std_msgs/msg/Float64]$MSGNS.Double" \
@@ -264,6 +277,8 @@ setsid ros2 run "$BRIDGE_PKG" parameter_bridge \
   "/lunabot/steer/rear_right@std_msgs/msg/Float64]$MSGNS.Double" \
   "/lunabot/mast/pan@std_msgs/msg/Float64]$MSGNS.Double" \
   "/lunabot/mast/tilt@std_msgs/msg/Float64]$MSGNS.Double" \
+  "/lunabot/actuator_watchdog/state@std_msgs/msg/String[$MSGNS.StringMsg" \
+  --ros-args -r /lunabot/actuator_request:=/cmd_vel \
   >> "$EVIDENCE_DIR/bridge.log" 2>&1 &
 BRIDGE_PID=$!
 sleep 3
@@ -282,10 +297,15 @@ log "[6/10] bridge OK (pid $BRIDGE_PID)"
 echo "[7/10] Starting static TF (sensor frames)..........."
 # parent|child|x y z roll pitch yaw   (from model.sdf, joints at rest)
 TF_SPECS=(
-  "chassis|sensor_head|0.18 0 0.85 0 0 0"
-  "sensor_head|rgb_camera|0.14 0 0 0 0 0"
-  "sensor_head|depth_camera|0.14 0 -0.04 0 0 0"
+  "sensor_head|rgb_camera|0.14 0 0 0 0.25 0"
+  "sensor_head|depth_camera|0.14 0 -0.04 0 0.25 0"
   "sensor_head|lidar|0.02 0 0.09 0 0.5 0"
+  # Scoped sensor headers and ROS optical camera axes.
+  "sensor_head|lunabot_v4/sensor_head/lidar|0.02 0 0.09 0 0.5 0"
+  "chassis|imu_link|0 0 0.10 0 0 0"
+  "imu_link|lunabot_v4/imu_link/imu|0 0 0 0 0 0"
+  "rgb_camera|lunabot_v4/sensor_head/rgb_camera|0 0 0 -1.5707963267948966 0 -1.5707963267948966"
+  "depth_camera|lunabot_v4/sensor_head/depth_camera|0 0 0 -1.5707963267948966 0 -1.5707963267948966"
 )
 for spec in "${TF_SPECS[@]}"; do
   IFS='|' read -r parent child xyzrpy <<< "$spec"
@@ -294,10 +314,29 @@ for spec in "${TF_SPECS[@]}"; do
     >> "$EVIDENCE_DIR/gazebo.log" 2>&1 &
   TF_PIDS+=("$!")
 done
-echo "      4 static transforms published (chassis -> sensor frames)"
+# Articulated mast transform follows measured joints, not a fixed neutral pose.
+setsid python3 "$REPO_DIR/scripts/sensor_mount_tf.py" \
+  >> "$EVIDENCE_DIR/gazebo.log" 2>&1 &
+TF_PIDS+=("$!")
+
+echo "      8 static transforms + dynamic mast published (chassis -> sensor frames)"
 log "[7/10] static TF OK"
 
 # ------------------------------------------------------------
+# Shared safety authority also owns Phase A teleoperation.
+setsid python3 "$REPO_DIR/scripts/health_monitor.py" \
+  >> "$EVIDENCE_DIR/health.log" 2>&1 &
+HEALTH_PID=$!
+setsid python3 "$REPO_DIR/scripts/control_odometry.py" \
+  --input-topic /cmd_vel_in --output-topic /cmd_vel \
+  >> "$EVIDENCE_DIR/control.log" 2>&1 &
+CONTROL_PID=$!
+sleep 1
+if ! kill -0 "$CONTROL_PID" 2>/dev/null; then
+  echo "ERROR: safety controller exited"
+  shutdown 1
+fi
+
 # [8/10] RViz2
 # ------------------------------------------------------------
 if [ "$HEADLESS" = "1" ]; then
@@ -396,7 +435,7 @@ printf "Environment       : %s\n" "$( [ "$HEADLESS" = 1 ] && echo "RUNNING (head
 echo "LunaBot           : RUNNING"
 echo "Sensors           : RUNNING (camera, depth, lidar, imu)"
 echo "Bridge            : RUNNING (16 mappings)"
-echo "TF                : RUNNING (odom->chassis + 4 static)"
+echo "TF                : RUNNING (odom->chassis + 8 static + dynamic mast)"
 echo "Phase Component   : RUNNING"
 printf "RViz2             : %s\n" "$( [ "$HEADLESS" = 1 ] && echo "skipped (headless)" || echo "RUNNING" )"
 echo ""
@@ -435,12 +474,18 @@ log "[10/10] status printed (overall $OVERALL)"
 # ------------------------------------------------------------
 # Drive: demo or interactive teleop
 # ------------------------------------------------------------
+# Startup authorization; never automatically clears a runtime health/stop latch.
+if ! python3 "$REPO_DIR/scripts/arm_safety.py" --timeout 60; then
+  echo "ERROR: safety startup arming failed"
+  shutdown 1
+fi
+
 if [ "$DEMO" = "1" ]; then
   echo ""
   echo "============================================================"
   echo " AUTOMATED DRIVE TEST (DEMO mode)"
   echo "============================================================"
-  python3 "$WASD_PATH" --demo "$EVIDENCE_DIR"
+  python3 "$WASD_PATH" --demo --topic /cmd_vel_in "$EVIDENCE_DIR"
   demo_rc=$?
   if [ "$demo_rc" -ne 0 ]; then
     OVERALL="FAIL"
@@ -449,7 +494,7 @@ if [ "$DEMO" = "1" ]; then
   echo "============================================================"
   printf "AUTO RUN COMPLETE - overall result: %s\n" "$OVERALL"
   echo "============================================================"
-  shutdown
+  [ "$OVERALL" = "PASS" ] && shutdown 0 || shutdown 1
 else
   echo ""
   echo "============================================================"
@@ -469,6 +514,6 @@ else
   echo "============================================================"
   # Foreground on purpose: the teleop needs the terminal (stdin).
   # Ctrl+C reaches it via the process group; Q exits it normally.
-  python3 "$WASD_PATH"
+  python3 "$WASD_PATH" --topic /cmd_vel_in
   shutdown
 fi

@@ -14,6 +14,8 @@
 [PASS] file exists: scripts/launch-l.sh
 [PASS] file exists: scripts/phase_k_evaluator.py
 [PASS] file exists: scripts/phase_l_mission.py
+[PASS] file exists: scripts/mission_lifecycle.py
+[PASS] file exists: scripts/mission_event_store.py
 [PASS] file exists: scripts/obstacle_detector.py
 [PASS] file exists: scripts/terrain_cost_mapper.py
 [PASS] file exists: tools/validate_phase_k.py
@@ -33,6 +35,8 @@
 [PASS] executable: scripts/phase_l_mission.py
 [PASS] executable: tools/validate_phase_l.py
 [PASS] Python syntax: scripts/phase_l_mission.py
+[PASS] Python syntax: scripts/mission_lifecycle.py
+[PASS] Python syntax: scripts/mission_event_store.py
 [PASS] Python syntax: scripts/phase_k_evaluator.py
 [PASS] Python syntax: scripts/obstacle_detector.py
 [PASS] Python syntax: scripts/astar_navigation.py
@@ -57,7 +61,7 @@ RESULT: 105/105 checks passed - ALL PASS
 [PASS] Phase L is symlink-safe
 [PASS] Phase L uses process groups
 [PASS] Phase L has a shutdown trap
-[PASS] Phase L cleans mission observer
+[PASS] Phase L cleans mission lifecycle supervisor
 [PASS] Phase L cleans inherited evaluator
 [PASS] Phase L reports clean shutdown
 [PASS] Phase L has 23 independent stages
@@ -86,10 +90,22 @@ RESULT: 105/105 checks passed - ALL PASS
 [PASS] mission supervisor observes obstacle status
 [PASS] mission supervisor observes real goal
 [PASS] mission supervisor observes map
+[PASS] mission lifecycle rejects invalid maps and tracks a goal ID
+[PASS] mission lifecycle gates map, goal, plan, active and completion states
+[PASS] new goal clears prior goal-scoped evidence
+[PASS] mission event store is durable and idempotent
+[PASS] mission accepts pause/cancel/recovery/e-stop/delivery commands
+[PASS] mission status gates motion and stale supervisor state stops safely
+[PASS] obstacle route invalidation allows replanning while hard stops block
+[PASS] Phase L wires command/event persistence and mission gate
 [PASS] mission supervisor emits retained pass
 [PASS] mission supervisor has no motion publisher
 [PASS] mission supervisor does not publish a goal
 [PASS] obstacle detector is observation-only
+[PASS] follower invalidates a blocked route before resuming motion
+[PASS] follower reports stop and changed-path latency
+[PASS] replan monitor measures obstacle-to-plan latency
+[PASS] Phase L requires fresh obstacle map before following
 [PASS] cost map consumes sensed obstacle overlay
 [PASS] cost map blocks the rover footprint
 [PASS] Phase L starts mission supervisor directly
@@ -109,5 +125,8 @@ RESULT: 105/105 checks passed - ALL PASS
 [PASS] docs contain relaunch
 [PASS] docs contain final-phase gate
 [PASS] validator is honest about runtime
+[PASS] docs define mission lifecycle, map rejection, and goal IDs
+[PASS] docs define durable delivery idempotency and motion gate
+[PASS] docs define obstacle latency clock boundaries
 
-RESULT: 107/107 checks passed
+RESULT: 126/126 checks passed

@@ -10,13 +10,16 @@ Phase B controller. Unknown/occupied cells are not traversed by default.
 from __future__ import annotations
 
 import heapq
+import json
 import math
+from pathlib import Path as FilePath
 from typing import Optional
 
 import rclpy
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from rclpy.duration import Duration
+from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, QoSProfile, ReliabilityPolicy,
                        qos_profile_sensor_data)
@@ -59,6 +62,7 @@ class AStarNavigation(Node):
         self.declare_parameter('cmd_topic', '/cmd_vel_in')
         self.declare_parameter('status_topic', '/lunabot/navigation/status')
         self.declare_parameter('auto_goal', False)
+        self.declare_parameter('require_path_health', False)
         self.declare_parameter('auto_goal_distance', 1.5)
         self.declare_parameter('goal_tolerance', 0.35)
         self.declare_parameter('occupied_threshold', 65)
@@ -87,6 +91,12 @@ class AStarNavigation(Node):
         self.max_linear = float(p('max_linear').value)
         self.max_angular = float(p('max_angular').value)
         self.map_frame = str(p('map_frame').value)
+        self.motion_health = None
+        if p('require_path_health').value:
+            from safety_health import HealthReceiver
+            config = json.loads((FilePath(__file__).resolve().parents[1] /
+                                 'config/safety/control.json').read_text())['health']
+            self.motion_health = HealthReceiver(self, config, True, self.path_topic)
 
         map_qos = QoSProfile(depth=1)
         map_qos.reliability = ReliabilityPolicy.RELIABLE
@@ -119,12 +129,13 @@ class AStarNavigation(Node):
         self.manual_goal_seen = False
         self.path_points: list[tuple[float, float]] = []
         self.path_stamp = self.get_clock().now()
-        self.last_plan = self.get_clock().now() - Duration(seconds=10.0)
+        self.last_plan = None
         self.last_status = ''
         self.reached = False
         self.last_waypoint = -1
+        self.schedule_clock = Clock(clock_type=ClockType.STEADY_TIME)
         self.timer = self.create_timer(1.0 / max(1.0, p('control_rate').value),
-                                      self._tick)
+                                      self._tick, clock=self.schedule_clock)
         self.publish_status('PLANNER_WAITING_FOR_MAP')
 
     def publish_status(self, text: str) -> None:
@@ -135,6 +146,11 @@ class AStarNavigation(Node):
         msg.data = text
         self.status_pub.publish(msg)
         self.get_logger().info(text)
+
+    def _latch(self, reason):
+        # The controller owns persistent safety latches. This observer only
+        # stops input; it never resets or arms the controller.
+        self._publish_stop()
 
     def _map_callback(self, msg: OccupancyGrid) -> None:
         if msg.info.width == 0 or msg.info.height == 0 or not msg.data:
@@ -237,10 +253,15 @@ class AStarNavigation(Node):
         return (origin.position.x + c * mx - s * my,
                 origin.position.y + s * mx + c * my)
 
+    def _cell_in_bounds(self, cell) -> bool:
+        info = self.map_msg.info
+        x, y = cell
+        return 0 <= x < info.width and 0 <= y < info.height
+
     def _cell_is_free(self, cell) -> bool:
         info = self.map_msg.info
         x, y = cell
-        if x < 0 or y < 0 or x >= info.width or y >= info.height:
+        if not self._cell_in_bounds(cell):
             return False
         value = self.map_msg.data[y * info.width + x]
         if value < 0:
@@ -257,6 +278,9 @@ class AStarNavigation(Node):
         return True
 
     def _nearest_free(self, cell):
+        # Never reinterpret a goal outside the occupancy map as an in-map goal.
+        if not self._cell_in_bounds(cell):
+            return None
         if self._safe_cell(cell):
             return cell
         for radius in range(1, 15):
@@ -273,8 +297,17 @@ class AStarNavigation(Node):
         open_set = [(0.0, start)]
         came_from = {}
         g_score = {start: 0.0}
+        closed = set()
+        clearance = {}
+        def safe(cell):
+            if cell not in clearance:
+                clearance[cell] = self._safe_cell(cell)
+            return clearance[cell]
         while open_set:
             _, current = heapq.heappop(open_set)
+            if current in closed:
+                continue
+            closed.add(current)
             if current == goal:
                 path = [current]
                 while current in came_from:
@@ -284,8 +317,14 @@ class AStarNavigation(Node):
                 return path
             for dx, dy in neighbors:
                 nxt = (current[0] + dx, current[1] + dy)
-                if not self._safe_cell(nxt):
+                if nxt in closed or not safe(nxt):
                     continue
+                if dx and dy:
+                    # A diagonal edge is valid only when both adjacent cardinal
+                    # cells are safe; otherwise the path clips an obstacle corner.
+                    if (not safe((current[0] + dx, current[1])) or
+                            not safe((current[0], current[1] + dy))):
+                        continue
                 step = math.sqrt(2.0) if dx and dy else 1.0
                 tentative = g_score[current] + step
                 if tentative >= g_score.get(nxt, float('inf')):
@@ -337,12 +376,17 @@ class AStarNavigation(Node):
             pose.pose.orientation.z, pose.pose.orientation.w = q[2], q[3]
             path.poses.append(pose)
         self.path_pub.publish(path)
-        self.last_plan = self.get_clock().now()
         self.last_waypoint = -1
         self.publish_status(f'PLANNING_PASS cells={len(cells)}')
         return True
 
     def _follow(self, current):
+        if self.motion_health is not None:
+            reason = self.motion_health.error(check_path=True)
+            if reason:
+                self._publish_stop()
+                self.publish_status('FOLLOWER_WAITING_FOR_HEALTH ' + reason)
+                return
         if not self.path_points or self.goal_msg is None:
             self._publish_stop()
             return
@@ -400,12 +444,24 @@ class AStarNavigation(Node):
             self.publish_status('PLANNER_WAITING_FOR_GOAL')
             self._publish_stop()
             return
+        if self.reached:
+            self._publish_stop()
+            return
         if not self.reached:
             self.goal_pub.publish(self.goal_msg)
-        now = self.get_clock().now()
-        if (not self.path_points or
+        now = self.schedule_clock.now()
+        if (self.last_plan is None or
                 (now - self.last_plan).nanoseconds / 1e9 >= self.replan_period):
-            self._plan(current)
+            # Rate-limit unsuccessful attempts too. Retrying a disconnected
+            # route on every control tick starves subscriptions and stop output.
+            self.last_plan = now
+            if not self._plan(current):
+                self.path_points = []
+                self._publish_stop()
+                return
+        if not self.path_points:
+            self._publish_stop()
+            return
         self._follow(current)
 
 
@@ -416,6 +472,9 @@ def main(args=None):
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except Exception:
+        if rclpy.ok():
+            raise
     finally:
         try:
             node._publish_stop()

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from static_contracts import shared_shutdown
 """Static Phase I gate: full terrain-aware autonomous integration.
 
 This validator checks the independent launch-i contract and the approved
@@ -105,14 +106,14 @@ baseline_report_state = {
     path: (ROOT / path).read_bytes() if (ROOT / path).exists() else None
     for path in baseline_reports
 }
-for rel, expected, report in [("tools/validate_phase_a.py", "80/80", "evidence/phase-a-launch-a/static_validation.txt"),
+for rel, expected, report in [("tools/validate_phase_a.py", "96/96", "evidence/phase-a-launch-a/static_validation.txt"),
                               ("tools/validate_phase_b.py", "103/103", "evidence/phase-b-launch-b/static_validation.txt"),
                               ("tools/validate_phase_c.py", "133/133", "evidence/phase-c-launch-c/static_validation.txt"),
                               ("tools/validate_phase_d.py", "152/152", "evidence/phase-d-launch-d/static_validation.txt"),
                               ("tools/validate_phase_e.py", "112/112", "evidence/phase-e-launch-e/static_validation.txt"),
-                              ("tools/validate_phase_f.py", "122/122", "evidence/phase-f-launch-f/static_validation.txt"),
-                              ("tools/validate_phase_g.py", "131/131", "evidence/phase-g-launch-g/static_validation.txt"),
-                              ("tools/validate_phase_h.py", "144/144", "evidence/phase-h-launch-h/static_validation.txt")]:
+                              ("tools/validate_phase_f.py", "143/143", "evidence/phase-f-launch-f/static_validation.txt"),
+                              ("tools/validate_phase_g.py", "147/147", "evidence/phase-g-launch-g/static_validation.txt"),
+                              ("tools/validate_phase_h.py", "151/151", "evidence/phase-h-launch-h/static_validation.txt")]:
     r = run_preserving_reports([sys.executable, rel], [report])
     check(f"approved baseline remains green: {rel}",
           r.returncode == 0 and expected in r.stdout, r.stdout[-180:].strip())
@@ -145,12 +146,12 @@ check("Phase I does not invoke an earlier launcher", "launch-h" not in noncommen
 check("Phase I has its own evidence directory", "phase-i-launch-i" in launch and
       "phase-h-launch-h" not in noncomment)
 check("Phase I is symlink-safe", 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' in launch)
-check("Phase I uses process groups", "setsid" in launch and "stop_group()" in launch)
+check("Phase I uses process groups", "setsid" in launch and shared_shutdown(launch))
 check("Phase I has a shutdown trap", "trap 'shutdown 130' INT TERM" in launch)
 check("Phase I cleans active follower", "FOLLOWER_PID" in launch and
       'stop_group "$FOLLOWER_PID"' in launch)
 check("Phase I reports its clean shutdown", "Launch I environment cleanly closed." in launch)
-check("Phase I has bounded shutdown", 'kill -KILL -"$pid"' in launch)
+check("Phase I has bounded shutdown", shared_shutdown(launch))
 check("Phase I preserves the terrain planner", 'TERRAIN_PLANNER_PATH="$REPO_DIR/scripts/terrain_aware_planner.py"' in launch)
 check("Phase I preserves the Phase D planner diagnostically", 'NAV_PATH="$REPO_DIR/scripts/astar_navigation.py"' in launch and
       "diagnostic_cmd_vel" in launch)
@@ -170,8 +171,9 @@ check("follower has conservative limits", "max_linear" in follower and "max_angu
 check("follower publishes integrated status", "INTEGRATION_GOAL_REACHED" in follower and
       "self.status_pub" in follower)
 check("follower stops safely", "_publish_stop" in follower and "Twist()" in follower)
-check("follower latches a completed goal safely", "if self.reached:" in follower and
-      "if self.reached:\n            self._publish_stop()" in follower)
+check("follower latches a completed goal safely",
+      ("if self.reached:\n            self._publish_stop()" in follower or
+       'if getattr(self, "reached", False):\n            self._publish_stop()' in follower))
 check("follower does not publish final cmd_vel", 'cmd_topic", "/cmd_vel"' not in follower)
 
 # Phase I launcher/runtime integration.

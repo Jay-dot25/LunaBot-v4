@@ -1,0 +1,51 @@
+{
+  "max_linear": 0.45,
+  "max_angular": 1,
+  "max_linear_accel": 0.4,
+  "max_angular_accel": 0.8,
+  "watchdog_sec": 0.5,
+  "rate": 30,
+  "health": {
+    "clock_timeout_wall_sec": 0.5,
+    "input_timeout_wall_sec": 1.0,
+    "max_stamp_age_sim_sec": 0.25,
+    "future_tolerance_sim_sec": 0.1,
+    "path_timeout_sec": 3.0,
+    "inputs": {
+      "rgb": {
+        "topic": "/lunabot/camera/image_raw",
+        "frame": "lunabot_v4/sensor_head/rgb_camera"
+      },
+      "depth": {
+        "topic": "/lunabot/depth/image_raw",
+        "frame": "lunabot_v4/sensor_head/depth_camera"
+      },
+      "rgb_info": {
+        "topic": "/lunabot/camera/camera_info",
+        "frame": "lunabot_v4/sensor_head/rgb_camera"
+      },
+      "depth_info": {
+        "topic": "/lunabot/depth/camera_info",
+        "frame": "lunabot_v4/sensor_head/depth_camera"
+      },
+      "scan": {
+        "topic": "/lunabot/lidar/scan",
+        "frame": "lunabot_v4/sensor_head/lidar"
+      },
+      "imu": {
+        "topic": "/lunabot/imu",
+        "frame": "lunabot_v4/imu_link/imu"
+      },
+      "odom": {
+        "topic": "/lunabot/odom",
+        "frame": "odom"
+      },
+      "joints": {
+        "topic": "/lunabot/joint_states",
+        "frame": ""
+      }
+    },
+    "map_tf_stamp_offset_sec": 0.2,
+    "health_report_timeout_wall_sec": 0.5
+  }
+}

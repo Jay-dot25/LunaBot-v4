@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "description": "Matched dynamic-replan comparison of weighted A* from scratch and a benchmark-only D* Lite candidate, using the P4-03 occupancy routes.",
+  "base_scenarios": "navigation_baselines.json",
+  "trials_per_route_per_mode": 3,
+  "decision_gate": {
+    "minimum_median_replan_speedup_fraction": 0.20,
+    "minimum_route_medians_improved": 2,
+    "maximum_weighted_cost_regression_fraction": 0.01,
+    "require_all_attempts_successful": true
+  },
+  "updates": {
+    "wall_gap_detour": [[18, 26, 22, 27]],
+    "bounded_corridor": [[20, 7, 20, 11]],
+    "alternating_barriers": [[17, 7, 20, 10]]
+  }
+}

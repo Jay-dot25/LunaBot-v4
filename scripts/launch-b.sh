@@ -25,13 +25,13 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORLD_DIR="$REPO_DIR/src/lunabot_gazebo/worlds"
-WORLD_PATH="$WORLD_DIR/lunar_world.sdf"
-MODEL_PATH="$REPO_DIR/src/lunabot_gazebo/models/lunabot_v4/model.sdf"
+WORLD_PATH="${LUNABOT_WORLD_PATH:-$WORLD_DIR/lunar_world.sdf}"
+MODEL_PATH="${LUNABOT_MODEL_PATH:-$REPO_DIR/src/lunabot_gazebo/models/lunabot_v4/model.sdf}"
 WASD_PATH="$REPO_DIR/scripts/wasd_teleop.py"
 CONTROL_PATH="$REPO_DIR/scripts/control_odometry.py"
 ODOM_PATH="$REPO_DIR/scripts/odometry_monitor.py"
 RVIZ_CONFIG="$REPO_DIR/rviz/phase_b.rviz"
-EVIDENCE_DIR="$REPO_DIR/evidence/phase-b-launch-b"
+EVIDENCE_DIR="${EVIDENCE_DIR:-$REPO_DIR/evidence/phase-b-launch-b}"
 LOG_FILE="$EVIDENCE_DIR/last_run.log"
 
 SPAWN_Z="-2.308"
@@ -39,12 +39,30 @@ WORLD_NAME="lunar_world"
 HEADLESS="${HEADLESS:-0}"
 DEMO="${DEMO:-0}"
 EVIDENCE="${EVIDENCE:-0}"
+WSL_SOFTWARE_PROFILE="${WSL_SOFTWARE_PROFILE:-}"
+SAFETY_CONFIG="$REPO_DIR/config/safety/control.json"
+HEALTH_REPORT_TIMEOUT_WALL_SEC="0.5"
+if [ "$HEADLESS" = "1" ] && grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease 2>/dev/null; then
+  WSL_SOFTWARE_PROFILE="${WSL_SOFTWARE_PROFILE:-1}"
+fi
+WSL_SOFTWARE_PROFILE="${WSL_SOFTWARE_PROFILE:-0}"
+if [ "$WSL_SOFTWARE_PROFILE" = "1" ]; then
+  export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+  export LP_NUM_THREADS="${LP_NUM_THREADS:-2}"
+  export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+  export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+  export FASTDDS_BUILTIN_TRANSPORTS="${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
+  export ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
+  HEALTH_REPORT_TIMEOUT_WALL_SEC="2.0"
+  SAFETY_CONFIG="$EVIDENCE_DIR/wsl_software_safety_profile.json"
+fi
 
 OVERALL="PASS"
 GAZEBO_PID=""
 BRIDGE_PID=""
 RVIZ_PID=""
 CONTROL_PID=""
+HEALTH_PID=""
 ODOM_PID=""
 TF_PIDS=()
 BRIDGE_PKG=""
@@ -55,6 +73,9 @@ mkdir -p "$EVIDENCE_DIR"
 say() { echo "$@"; echo "$@" >> "$LOG_FILE"; }
 log() { echo "$@" >> "$LOG_FILE"; }
 
+# ros2 run creates child processes; each launch below uses setsid.
+# Stop the owned process group rather than only its ros2 wrapper.
+source "$REPO_DIR/scripts/process_helpers.sh"
 shutdown() {
   local rc="${1:-$EXIT_CODE}"
   trap - INT TERM
@@ -64,16 +85,15 @@ shutdown() {
   say "------------------------------------------------------------"
   # Stop command generation first, then send an explicit zero command.
   if [ -n "$CONTROL_PID" ]; then
-    kill -TERM "$CONTROL_PID" 2>/dev/null || true
-    wait "$CONTROL_PID" 2>/dev/null || true
+    stop_group "$CONTROL_PID"
   fi
   if [ -n "$ODOM_PID" ]; then
-    kill -TERM "$ODOM_PID" 2>/dev/null || true
-    wait "$ODOM_PID" 2>/dev/null || true
+    stop_group "$ODOM_PID"
   fi
-  [ -n "$BRIDGE_PID" ] && kill -TERM "$BRIDGE_PID" 2>/dev/null || true
-  for p in ${TF_PIDS[@]+"${TF_PIDS[@]}"}; do kill "$p" 2>/dev/null || true; done
-  [ -n "$RVIZ_PID" ] && kill "$RVIZ_PID" 2>/dev/null || true
+  [ -n "$BRIDGE_PID" ] && stop_group "$BRIDGE_PID"
+  for p in ${TF_PIDS[@]+"${TF_PIDS[@]}"}; do stop_group "$p"; done
+  [ -n "$RVIZ_PID" ] && stop_group "$RVIZ_PID"
+  [ -n "$HEALTH_PID" ] && stop_group "$HEALTH_PID"
   if [ -n "$GAZEBO_PID" ]; then
     kill -TERM -"$GAZEBO_PID" 2>/dev/null || kill -TERM "$GAZEBO_PID" 2>/dev/null || true
     for _ in $(seq 1 20); do
@@ -121,7 +141,8 @@ echo "[1/12] Checking Phase A baseline + Phase B files....."
 missing=0
 for f in "$WORLD_PATH" "$MODEL_PATH" "$WASD_PATH" "$CONTROL_PATH" "$ODOM_PATH" \
          "$RVIZ_CONFIG" "$WORLD_DIR/meshes/lunar_terrain.obj" \
-         "$WORLD_DIR/meshes/lunar_terrain_collision.obj"; do
+         "$WORLD_DIR/meshes/lunar_terrain_collision.obj" \
+         "$WORLD_DIR/meshes/lunar_terrain_mission_collision.obj"; do
   if [ ! -f "$f" ]; then
     say "      MISSING: $f"
     missing=1
@@ -148,6 +169,12 @@ fi
 set +u
 source /opt/ros/humble/setup.bash
 set -u
+if [ "$WSL_SOFTWARE_PROFILE" = "1" ]; then
+  # setup.bash can reset loopback-only discovery; reassert it for every node
+  # and CLI launched by this simulation profile.
+  export ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
+  export FASTDDS_BUILTIN_TRANSPORTS="${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
+fi
 if ! command -v ros2 >/dev/null 2>&1; then
   echo "      ERROR: ros2 CLI not found after sourcing."
   exit 2
@@ -187,7 +214,7 @@ fi
 # A prior interrupted `ros2 run` can leave its child bridge alive. Remove
 # only processes belonging to this Phase B command/node contract.
 for pattern in "ros_ign_bridge.*parameter_bridge" "ros_gz_bridge.*parameter_bridge" \
-               "scripts/control_odometry.py" "scripts/odometry_monitor.py"; do
+               "scripts/control_odometry.py" "scripts/health_monitor.py" "scripts/odometry_monitor.py"; do
   for p in $(pgrep -f "$pattern" 2>/dev/null || true); do
     kill -TERM "$p" 2>/dev/null || true
   done
@@ -197,6 +224,8 @@ echo "      clean state: OK"
 log "[3/12] clean state OK"
 
 # ------------------------------------------------------------
+source "$REPO_DIR/scripts/prepare_safety_plugin.sh"
+
 # [4/12] Start Gazebo - same validated Phase A world
 # ------------------------------------------------------------
 echo "[4/12] Starting Gazebo lunar world.................."
@@ -256,14 +285,16 @@ log "[5/12] spawn OK (z=$SPAWN_Z)"
 echo "[6/12] Starting ROS 2 <-> Gazebo bridge............."
 : > "$EVIDENCE_DIR/bridge.log"
 setsid ros2 run "$BRIDGE_PKG" parameter_bridge \
-  "/cmd_vel@geometry_msgs/msg/Twist]$MSGNS.Twist" \
+  "/lunabot/actuator_request@geometry_msgs/msg/Twist]$MSGNS.Twist" \
   "/clock@rosgraph_msgs/msg/Clock[$MSGNS.Clock" \
   "/lunabot/camera/image_raw@sensor_msgs/msg/Image[$MSGNS.Image" \
+  "/lunabot/camera/camera_info@sensor_msgs/msg/CameraInfo[$MSGNS.CameraInfo" \
   "/lunabot/depth/image_raw@sensor_msgs/msg/Image[$MSGNS.Image" \
+  "/lunabot/depth/camera_info@sensor_msgs/msg/CameraInfo[$MSGNS.CameraInfo" \
   "/lunabot/lidar/scan@sensor_msgs/msg/LaserScan[$MSGNS.LaserScan" \
   "/lunabot/imu@sensor_msgs/msg/Imu[$MSGNS.IMU" \
   "/lunabot/odom@nav_msgs/msg/Odometry[$MSGNS.Odometry" \
-  "/lunabot/joint_states@sensor_msgs/JointState[$MSGNS.Model" \
+  "/lunabot/joint_states@sensor_msgs/msg/JointState[$MSGNS.Model" \
   "/tf@tf2_msgs/msg/TFMessage[$MSGNS.Pose_V" \
   "/lunabot/steer/front_left@std_msgs/msg/Float64]$MSGNS.Double" \
   "/lunabot/steer/front_right@std_msgs/msg/Float64]$MSGNS.Double" \
@@ -271,6 +302,8 @@ setsid ros2 run "$BRIDGE_PKG" parameter_bridge \
   "/lunabot/steer/rear_right@std_msgs/msg/Float64]$MSGNS.Double" \
   "/lunabot/mast/pan@std_msgs/msg/Float64]$MSGNS.Double" \
   "/lunabot/mast/tilt@std_msgs/msg/Float64]$MSGNS.Double" \
+  "/lunabot/actuator_watchdog/state@std_msgs/msg/String[$MSGNS.StringMsg" \
+  --ros-args -r /lunabot/actuator_request:=/cmd_vel \
   >> "$EVIDENCE_DIR/bridge.log" 2>&1 &
 BRIDGE_PID=$!
 sleep 3
@@ -283,10 +316,15 @@ log "[6/12] bridge OK (pid $BRIDGE_PID)"
 # ------------------------------------------------------------
 echo "[7/12] Starting static TF (sensor frames)............"
 TF_SPECS=(
-  "chassis|sensor_head|0.18 0 0.85 0 0 0"
-  "sensor_head|rgb_camera|0.14 0 0 0 0 0"
-  "sensor_head|depth_camera|0.14 0 -0.04 0 0 0"
+  "sensor_head|rgb_camera|0.14 0 0 0 0.25 0"
+  "sensor_head|depth_camera|0.14 0 -0.04 0 0.25 0"
   "sensor_head|lidar|0.02 0 0.09 0 0.5 0"
+  # Scoped sensor headers and ROS optical camera axes.
+  "sensor_head|lunabot_v4/sensor_head/lidar|0.02 0 0.09 0 0.5 0"
+  "chassis|imu_link|0 0 0.10 0 0 0"
+  "imu_link|lunabot_v4/imu_link/imu|0 0 0 0 0 0"
+  "rgb_camera|lunabot_v4/sensor_head/rgb_camera|0 0 0 -1.5707963267948966 0 -1.5707963267948966"
+  "depth_camera|lunabot_v4/sensor_head/depth_camera|0 0 0 -1.5707963267948966 0 -1.5707963267948966"
 )
 for spec in "${TF_SPECS[@]}"; do
   IFS='|' read -r parent child xyzrpy <<< "$spec"
@@ -295,7 +333,12 @@ for spec in "${TF_SPECS[@]}"; do
     >> "$EVIDENCE_DIR/gazebo.log" 2>&1 &
   TF_PIDS+=("$!")
 done
-echo "      4 static transforms published (chassis -> sensor frames)"
+# Articulated mast transform follows measured joints, not a fixed neutral pose.
+setsid python3 "$REPO_DIR/scripts/sensor_mount_tf.py" \
+  >> "$EVIDENCE_DIR/gazebo.log" 2>&1 &
+TF_PIDS+=("$!")
+
+echo "      8 static transforms + dynamic mast published (chassis -> sensor frames)"
 log "[7/12] static TF OK"
 
 # ------------------------------------------------------------
@@ -303,7 +346,16 @@ log "[7/12] static TF OK"
 # ------------------------------------------------------------
 echo "[8/12] Starting Phase B control layer................"
 : > "$EVIDENCE_DIR/control.log"
-setsid python3 "$CONTROL_PATH" \
+if [ "$WSL_SOFTWARE_PROFILE" = "1" ]; then
+  python3 "$REPO_DIR/tools/make_p8_safety_profile.py" \
+    --source "$REPO_DIR/config/safety/control.json" --output "$SAFETY_CONFIG" \
+    --health-report-timeout-wall-sec "$HEALTH_REPORT_TIMEOUT_WALL_SEC" \
+    >> "$EVIDENCE_DIR/safety_profile.log" 2>&1 || abort "could not create WSL software safety profile"
+fi
+setsid python3 "$REPO_DIR/scripts/health_monitor.py" --config "$SAFETY_CONFIG" \
+  >> "$EVIDENCE_DIR/health.log" 2>&1 &
+HEALTH_PID=$!
+setsid python3 "$CONTROL_PATH" --config "$SAFETY_CONFIG" \
   --input-topic /cmd_vel_in --output-topic /cmd_vel \
   --max-linear 0.45 --max-angular 1.0 \
   --max-linear-accel 0.4 --max-angular-accel 0.8 \
@@ -440,7 +492,7 @@ echo "Watchdog          : RUNNING (0.5 s timeout)"
 echo "Odometry          : RUNNING (/lunabot/odom monitor)"
 echo "Sensors           : RUNNING (camera, depth, lidar, imu)"
 echo "Bridge            : RUNNING (16 mappings)"
-echo "TF                : RUNNING (odom->chassis + 4 static)"
+echo "TF                : RUNNING (odom->chassis + 8 static + dynamic mast)"
 printf "RViz2             : %s\n" "$( [ "$HEADLESS" = 1 ] && echo "skipped (headless)" || echo "RUNNING" )"
 echo ""
 echo "------------------------------------------------------------"
@@ -474,6 +526,19 @@ fi
 # ------------------------------------------------------------
 # Drive: Phase B input topic -> controller -> DiffDrive
 # ------------------------------------------------------------
+# Startup authorization; never automatically clears a runtime health/stop latch.
+if ! python3 "$REPO_DIR/scripts/arm_safety.py" --timeout 60; then
+  echo "ERROR: safety startup arming failed"
+  shutdown 1
+fi
+
+# Headless service mode for operator/fault acceptance tests; no teleop publisher.
+if [ "${HOLD:-0}" = "1" ]; then
+  echo "HEADLESS HOLD READY"
+  while kill -0 "$GAZEBO_PID" 2>/dev/null; do sleep 1; done
+  abort "Gazebo exited during hold"
+fi
+
 if [ "$DEMO" = "1" ]; then
   echo ""
   echo "============================================================"

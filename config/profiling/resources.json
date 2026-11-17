@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "profile_id": "wsl2-jay-desktop-20261114",
+  "status": "PROVISIONAL_ENVIRONMENT_BASELINE",
+  "environment": {
+    "os": "Ubuntu 22.04 under WSL2",
+    "logical_cpu_count": 8,
+    "memory_total_mib": 4920,
+    "gpu_name": "NVIDIA GeForce RTX 3050 Laptop GPU",
+    "gpu_vram_total_mib": 4096,
+    "target_laptop_model": "HP Victus 15",
+    "target_cpu": "AMD Ryzen 5 5600H (6 cores / 12 threads)",
+    "target_host_memory_gib": 8,
+    "planned_wsl_memory_gib": 5,
+    "planned_wsl_processors": 8,
+    "planned_wsl_swap_gib": 8,
+    "target_hardware_source": "LunaBot Project Plan for HP Victus 15 PDF in user Downloads",
+    "profiler": "psutil 5.9.0",
+    "host_os_version": "Windows 10.0.26340.0",
+    "host_logical_cpu_count": 12,
+    "host_primary_display_px": [1536, 864],
+    "host_display_scaling_percent": null,
+    "host_gpu_driver_version": "621.14",
+    "host_inventory_note": "The target HP Victus 15 CPU, 8 GiB RAM, RTX 3050 Laptop GPU/4 GiB VRAM, and planned 5 GiB WSL allocation are documented in the user-supplied laptop plan PDF. Windows display, runtime version, logical CPU count, and NVIDIA driver were read in the prior inventory. CIM inventory and WSL launch are currently denied; Ubuntu/WSL resource figures above remain a provisional runtime profile and have not been revalidated."
+  },
+  "sampling": {
+    "default_duration_seconds": 300,
+    "interval_seconds": 1.0,
+    "ros_clock_topic": "/clock"
+  },
+  "stack_process_patterns": [
+    "ign gazebo",
+    "parameter_bridge",
+    "terrain_segmentation.py",
+    "semantic_terrain_mapper.py",
+    "terrain_cost_mapper.py",
+    "terrain_aware_planner.py",
+    "terrain_path_follower.py",
+    "dynamic_replan_monitor.py",
+    "obstacle_detector.py",
+    "phase_k_evaluator.py",
+    "phase_l_mission.py",
+    "dashboard_telemetry_adapter.py",
+    "dashboard_control_gateway.py",
+    "slam_toolbox"
+  ],
+  "limits": {
+    "stack_cpu_percent_of_host": null,
+    "stack_rss_mib": null,
+    "gpu_vram_mib": null,
+    "rtf_min": null,
+    "latency_p95_ms": null,
+    "state": "PENDING_APPROVED_ACCEPTANCE_LIMITS_AND_P9_03_GUI_BENCHMARK"
+  }
+}

@@ -18,7 +18,12 @@
 [PASS] file exists: scripts/astar_navigation.py
 [PASS] file exists: scripts/terrain_segmentation.py
 [PASS] file exists: scripts/semantic_terrain_mapper.py
+[PASS] file exists: scripts/semantic_layers.py
+[PASS] file exists: scripts/terrain_geometry.py
+[PASS] file exists: scripts/terrain_costs.py
 [PASS] file exists: scripts/terrain_cost_mapper.py
+[PASS] file exists: tests/test_terrain_geometry.py
+[PASS] file exists: tests/test_semantic_layers.py
 [PASS] file exists: config/slam_toolbox_phase_c.yaml
 [PASS] file exists: rviz/phase_a.rviz
 [PASS] file exists: rviz/phase_b.rviz
@@ -49,6 +54,10 @@
 [PASS] executable: tools/validate_phase_g.py
 [PASS] Python syntax: scripts/terrain_cost_mapper.py
 [PASS] Python syntax: scripts/semantic_terrain_mapper.py
+[PASS] Python syntax: scripts/terrain_geometry.py
+[PASS] Python syntax: scripts/terrain_costs.py
+[PASS] Python syntax: scripts/semantic_layers.py
+[PASS] Python syntax: tests/test_terrain_geometry.py
 [PASS] Python syntax: scripts/terrain_segmentation.py
 [PASS] Python syntax: scripts/astar_navigation.py
 [PASS] Python syntax: scripts/control_odometry.py
@@ -76,24 +85,24 @@
 [PASS] world SDF well-formed
 [PASS] model SDF well-formed
 [PASS] approved baseline remains green: tools/validate_phase_a.py - ==
-RESULT: 80/80 checks passed - ALL PASS
+RESULT: 96/96 checks passed - ALL PASS
 ============================================================
-report: /tmp/lunabot-phase-a/evidence/phase-a-launch-a/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-a-launch-a/static_validation.txt
 [PASS] approved baseline remains green: tools/validate_phase_b.py - RESULT: 103/103 checks passed - ALL PASS
 ============================================================
-report: /tmp/lunabot-phase-a/evidence/phase-b-launch-b/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-b-launch-b/static_validation.txt
 [PASS] approved baseline remains green: tools/validate_phase_c.py - ULT: 133/133 checks passed - ALL PASS
 ================================================================
-report: /tmp/lunabot-phase-a/evidence/phase-c-launch-c/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-c-launch-c/static_validation.txt
 [PASS] approved baseline remains green: tools/validate_phase_d.py - ULT: 152/152 checks passed - ALL PASS
 ================================================================
-report: /tmp/lunabot-phase-a/evidence/phase-d-launch-d/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-d-launch-d/static_validation.txt
 [PASS] approved baseline remains green: tools/validate_phase_e.py - ULT: 112/112 checks passed - ALL PASS
 ================================================================
-report: /tmp/lunabot-phase-a/evidence/phase-e-launch-e/static_validation.txt
-[PASS] approved baseline remains green: tools/validate_phase_f.py - ULT: 122/122 checks passed - ALL PASS
+report: /home/jay/lunabot-v4/evidence/phase-e-launch-e/static_validation.txt
+[PASS] Phase F projection and risk-layer contracts pass - ULT: 143/143 checks passed - ALL PASS
 ================================================================
-report: /tmp/lunabot-phase-a/evidence/phase-f-launch-f/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-f-launch-f/static_validation.txt
 [PASS] root launch-g resolves its real path
 [PASS] root launch-g execs scripts/launch-g.sh
 [PASS] Phase G does not invoke an earlier launcher
@@ -109,6 +118,10 @@ report: /tmp/lunabot-phase-a/evidence/phase-f-launch-f/static_validation.txt
 [PASS] Phase G preserves one SLAM system
 [PASS] cost mapper is a ROS node
 [PASS] cost mapper consumes semantic map
+[PASS] cost mapper consumes aligned terrain geometry risks
+[PASS] geometry layers include elevation-derived slope roughness and crater risk
+[PASS] terrain cost fusion keeps unknown/shadow out of obstacle class
+[PASS] terrain risk scores are weighted into soft traversal costs
 [PASS] cost mapper publishes cost map
 [PASS] cost mapper defines terrain cost
 [PASS] cost mapper defines unknown caution cost
@@ -123,6 +136,8 @@ report: /tmp/lunabot-phase-a/evidence/phase-f-launch-f/static_validation.txt
 [PASS] Phase G validates cost map type
 [PASS] Phase G validates cost status type
 [PASS] Phase G validates real cost messages
+[PASS] Phase G validates semantic geometry layers
+[PASS] Phase G records geometry samples for evidence
 [PASS] Phase G validates cost content
 [PASS] Phase G records cost evidence
 [PASS] Phase G retains semantic content gate
@@ -138,9 +153,10 @@ report: /tmp/lunabot-phase-a/evidence/phase-f-launch-f/static_validation.txt
 [PASS] docs contain cost acceptance
 [PASS] docs contain cost map output
 [PASS] docs contain semantic input
+[PASS] docs contain geometry risk fusion
 [PASS] docs contain obstacle inflation
 [PASS] docs contain relaunch
 [PASS] docs contain Phase H gate
 [PASS] validator is honest about runtime
 
-RESULT: 131/131 checks passed
+RESULT: 147/147 checks passed

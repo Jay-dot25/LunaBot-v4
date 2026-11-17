@@ -56,7 +56,7 @@
 [PASS] model SDF well-formed
 [PASS] approved Phase I baseline remains green - ULT: 160/160 checks passed - ALL PASS
 ================================================================
-report: /tmp/lunabot-phase-a/evidence/phase-i-launch-i/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-i-launch-i/static_validation.txt
 [PASS] root launch-j resolves its real path
 [PASS] root launch-j execs scripts/launch-j.sh
 [PASS] Phase J is independent of launch-i

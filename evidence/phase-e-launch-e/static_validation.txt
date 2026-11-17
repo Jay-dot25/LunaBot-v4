@@ -56,18 +56,18 @@
 [PASS] world SDF well-formed
 [PASS] model SDF well-formed
 [PASS] approved baseline remains green: tools/validate_phase_a.py - ==
-RESULT: 80/80 checks passed - ALL PASS
+RESULT: 96/96 checks passed - ALL PASS
 ============================================================
-report: /tmp/lunabot-phase-a/evidence/phase-a-launch-a/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-a-launch-a/static_validation.txt
 [PASS] approved baseline remains green: tools/validate_phase_b.py - RESULT: 103/103 checks passed - ALL PASS
 ============================================================
-report: /tmp/lunabot-phase-a/evidence/phase-b-launch-b/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-b-launch-b/static_validation.txt
 [PASS] approved baseline remains green: tools/validate_phase_c.py - ULT: 133/133 checks passed - ALL PASS
 ================================================================
-report: /tmp/lunabot-phase-a/evidence/phase-c-launch-c/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-c-launch-c/static_validation.txt
 [PASS] approved baseline remains green: tools/validate_phase_d.py - ULT: 152/152 checks passed - ALL PASS
 ================================================================
-report: /tmp/lunabot-phase-a/evidence/phase-d-launch-d/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-d-launch-d/static_validation.txt
 [PASS] root launch-e resolves its real path
 [PASS] root launch-e execs scripts/launch-e.sh
 [PASS] Phase E does not invoke an earlier launcher
@@ -93,7 +93,7 @@ report: /tmp/lunabot-phase-a/evidence/phase-d-launch-d/static_validation.txt
 [PASS] perception status is late-join safe
 [PASS] perception does not alter navigation commands
 [PASS] Phase E resolves the perception path
-[PASS] Phase E starts perception directly
+[PASS] Phase E prepares the qualified P5-03 runtime
 [PASS] Phase E bridges the existing depth topic
 [PASS] Phase E keeps the existing RGB topic
 [PASS] Phase E validates depth at runtime

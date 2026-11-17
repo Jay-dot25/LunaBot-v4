@@ -11,11 +11,13 @@ and safe `/cmd_vel` output.
 from __future__ import annotations
 
 import math
+import time
 from typing import Optional
 
 import rclpy
 from geometry_msgs.msg import PoseStamped, Twist
-from nav_msgs.msg import Odometry, Path
+from nav_msgs.msg import OccupancyGrid, Odometry, Path
+from rclpy.clock import Clock, ClockType
 from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -45,6 +47,8 @@ class TerrainPathFollower(Node):
         self.declare_parameter("cmd_topic", "/cmd_vel_in")
         self.declare_parameter(
             "status_topic", "/lunabot/autonomy/status")
+        self.declare_parameter("mission_status_topic", "")
+        self.declare_parameter("mission_status_timeout", 1.5)
         self.declare_parameter("map_frame", "map")
         self.declare_parameter("base_frame", "chassis")
         self.declare_parameter("goal_tolerance", 0.35)
@@ -52,6 +56,12 @@ class TerrainPathFollower(Node):
         self.declare_parameter("max_angular", 0.60)
         self.declare_parameter("lookahead_cells", 2)
         self.declare_parameter("control_rate", 10.0)
+        self.declare_parameter("path_timeout", 2.5)
+        self.declare_parameter("obstacle_map_topic", "/lunabot/obstacles/map")
+        self.declare_parameter("obstacle_map_timeout", 1.0)
+        self.declare_parameter("require_obstacle_map", False)
+        self.declare_parameter("obstacle_threshold", 65)
+        self.declare_parameter("obstacle_clearance", 0.35)
 
         get = self.get_parameter
         self.path_topic = str(get("path_topic").value)
@@ -59,12 +69,27 @@ class TerrainPathFollower(Node):
         self.odom_topic = str(get("odom_topic").value)
         self.cmd_topic = str(get("cmd_topic").value)
         self.status_topic = str(get("status_topic").value)
+        self.mission_status_topic = str(get("mission_status_topic").value)
+        self.mission_gate_enabled = bool(self.mission_status_topic)
+        self.mission_motion_allowed = not self.mission_gate_enabled
+        self.mission_lifecycle_state = "UNBOUND"
+        self.mission_status_timeout = max(
+            0.3, float(get("mission_status_timeout").value))
+        self.mission_status_received_monotonic: Optional[float] = None
         self.map_frame = str(get("map_frame").value)
         self.base_frame = str(get("base_frame").value)
         self.goal_tolerance = max(0.05, float(get("goal_tolerance").value))
         self.max_linear = max(0.02, float(get("max_linear").value))
         self.max_angular = max(0.1, float(get("max_angular").value))
         self.lookahead_cells = max(0, int(get("lookahead_cells").value))
+        self.path_timeout = max(0.2, float(get("path_timeout").value))
+        self.obstacle_map_topic = str(get("obstacle_map_topic").value)
+        self.obstacle_map_timeout = max(
+            0.2, float(get("obstacle_map_timeout").value))
+        self.require_obstacle_map = bool(get("require_obstacle_map").value)
+        self.obstacle_threshold = int(get("obstacle_threshold").value)
+        self.obstacle_clearance = max(
+            0.05, float(get("obstacle_clearance").value))
 
         path_qos = QoSProfile(depth=1)
         path_qos.reliability = ReliabilityPolicy.RELIABLE
@@ -76,6 +101,16 @@ class TerrainPathFollower(Node):
         self.odom_sub = self.create_subscription(
             Odometry, self.odom_topic, self._odom_callback,
             qos_profile_sensor_data)
+        obstacle_qos = QoSProfile(depth=1)
+        obstacle_qos.reliability = ReliabilityPolicy.RELIABLE
+        obstacle_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self.obstacle_sub = self.create_subscription(
+            OccupancyGrid, self.obstacle_map_topic,
+            self._obstacle_map_callback, obstacle_qos)
+        if self.mission_gate_enabled:
+            self.mission_status_sub = self.create_subscription(
+                String, self.mission_status_topic,
+                self._mission_status_callback, obstacle_qos)
         self.cmd_pub = self.create_publisher(Twist, self.cmd_topic, 10)
         status_qos = QoSProfile(depth=1)
         status_qos.reliability = ReliabilityPolicy.RELIABLE
@@ -86,14 +121,28 @@ class TerrainPathFollower(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.path: list[tuple[float, float]] = []
+        self.path_received_monotonic: Optional[float] = None
+        self.obstacle_map: Optional[OccupancyGrid] = None
+        self.obstacle_map_received_monotonic: Optional[float] = None
         self.goal: Optional[PoseStamped] = None
         self.odom: Optional[Odometry] = None
         self.reached = False
         self.last_waypoint = -1
         self.last_status = ""
+        # After a local obstacle invalidates a route, repeated publications of
+        # that same planner route must not re-arm motion. Only a changed path
+        # can release this latch.
+        self.invalidated_path_signature: Optional[tuple] = None
+        self.path_invalidation_monotonic: Optional[float] = None
         self.publish_status("INTEGRATION_WAITING_FOR_TERRAIN_PLAN")
+        # This callback must keep feeding zero while mission motion is gated.
+        # Simulation time can advance much slower than wall time in headless
+        # WSL, but the controller's command watchdog is wall-clock based.
+        # Drive the command heartbeat from steady time so scheduler slowdown
+        # cannot turn a safe idle into a latched actuator timeout.
         self.timer = self.create_timer(
-            1.0 / max(1.0, float(get("control_rate").value)), self._tick)
+            1.0 / max(1.0, float(get("control_rate").value)), self._tick,
+            clock=Clock(clock_type=ClockType.STEADY_TIME))
 
     def publish_status(self, text: str) -> None:
         if text == self.last_status:
@@ -106,18 +155,70 @@ class TerrainPathFollower(Node):
 
     def _path_callback(self, msg: Path) -> None:
         if not msg.poses:
+            self.path = []
+            self.path_received_monotonic = time.monotonic()
             self.publish_status("INTEGRATION_EMPTY_TERRAIN_PLAN")
+            self._publish_stop()
             return
-        self.path = [(pose.pose.position.x, pose.pose.position.y)
+        candidate = [(pose.pose.position.x, pose.pose.position.y)
                      for pose in msg.poses]
+        signature = tuple((round(x, 4), round(y, 4)) for x, y in candidate)
+        if (self.invalidated_path_signature is not None and
+                signature == self.invalidated_path_signature):
+            # The planner can republish its latched output before its next
+            # cost-map cycle. Keep the follower stopped until a new route is
+            # actually available.
+            self._publish_stop()
+            return
+        # Terrain planner publishes at a higher rate than the map changes.
+        # Refresh the watchdog for an identical route without resetting
+        # waypoint progress or bouncing the follower status back to RECEIVED.
+        if (self.path and signature == self._path_signature(self.path) and
+                self.invalidated_path_signature is None):
+            self.path_received_monotonic = time.monotonic()
+            return
+        replan_latency_ms = None
+        if self.path_invalidation_monotonic is not None:
+            replan_latency_ms = max(
+                0.0, (time.monotonic() - self.path_invalidation_monotonic) * 1000.0)
+            self.invalidated_path_signature = None
+            self.path_invalidation_monotonic = None
+        self.path = candidate
+        self.path_received_monotonic = time.monotonic()
         # The terrain planner republishes its latched/replanned path. Do not
         # turn a completed goal back into an active one just because an
         # unchanged path arrived on the next planning tick.
         was_reached = self.reached
         self.last_waypoint = -1
         if not was_reached:
-            self.publish_status(
-                f"INTEGRATION_PATH_RECEIVED cells={len(self.path)}")
+            if replan_latency_ms is None:
+                self.publish_status(
+                    f"INTEGRATION_PATH_RECEIVED cells={len(self.path)}")
+            else:
+                self.publish_status(
+                    f"INTEGRATION_REPLAN_ACCEPTED cells={len(self.path)} "
+                    f"replan_latency_ms={replan_latency_ms:.1f}")
+
+    @staticmethod
+    def _path_signature(path: list[tuple[float, float]]) -> tuple:
+        return tuple((round(x, 4), round(y, 4)) for x, y in path)
+
+    def _invalidate_path_for_obstacle(self) -> None:
+        """Latch a blocked route invalid before any new command is published."""
+        now = time.monotonic()
+        detected_at = self.obstacle_map_received_monotonic
+        stop_latency_ms = (max(0.0, (now - detected_at) * 1000.0)
+                           if detected_at is not None else 0.0)
+        signature = self._path_signature(self.path)
+        self.invalidated_path_signature = signature
+        if self.path_invalidation_monotonic is None:
+            self.path_invalidation_monotonic = now
+        self.path = []
+        self.path_received_monotonic = now
+        self._publish_stop()
+        self.publish_status(
+            "INTEGRATION_PATH_INVALIDATED_OBSTACLE "
+            f"detection_to_stop_ms={stop_latency_ms:.1f}")
 
     @staticmethod
     def _same_goal(first: PoseStamped, second: PoseStamped) -> bool:
@@ -147,6 +248,86 @@ class TerrainPathFollower(Node):
 
     def _odom_callback(self, msg: Odometry) -> None:
         self.odom = msg
+
+    def _mission_status_callback(self, msg: String) -> None:
+        state = ""
+        for token in msg.data.split():
+            if token.startswith("lifecycle="):
+                state = token.partition("=")[2]
+                break
+        self.mission_lifecycle_state = state or "UNKNOWN"
+        self.mission_status_received_monotonic = time.monotonic()
+        # Only ACTIVE authorizes commands. Unknown, paused, cancelled, failed,
+        # blocked, completed, and startup states all fail closed.
+        self.mission_motion_allowed = state == "ACTIVE"
+        if not self.mission_motion_allowed:
+            self._publish_stop()
+
+    def _obstacle_map_callback(self, msg: OccupancyGrid) -> None:
+        if (msg.info.width <= 0 or msg.info.height <= 0 or
+                not math.isfinite(msg.info.resolution) or
+                msg.info.resolution <= 0.0 or
+                len(msg.data) != msg.info.width * msg.info.height):
+            self.obstacle_map = None
+            self.obstacle_map_received_monotonic = time.monotonic()
+            self.publish_status("INTEGRATION_INVALID_OBSTACLE_MAP")
+            self._publish_stop()
+            return
+        self.obstacle_map = msg
+        self.obstacle_map_received_monotonic = time.monotonic()
+
+    @staticmethod
+    def _grid_cell(grid: OccupancyGrid, x: float, y: float) -> tuple[int, int]:
+        info = grid.info
+        q = info.origin.orientation
+        yaw = math.atan2(2.0 * q.w * q.z,
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        dx, dy = x - info.origin.position.x, y - info.origin.position.y
+        gx = math.cos(yaw) * dx + math.sin(yaw) * dy
+        gy = -math.sin(yaw) * dx + math.cos(yaw) * dy
+        return (math.floor(gx / info.resolution),
+                math.floor(gy / info.resolution))
+
+    def _point_blocked(self, x: float, y: float) -> bool:
+        grid = self.obstacle_map
+        if grid is None:
+            return False
+        cx, cy = self._grid_cell(grid, x, y)
+        # Occupancy cells represent areas, not points; include the worst-case
+        # cell-center quantization in the footprint margin.
+        effective_clearance = (
+            self.obstacle_clearance + math.sqrt(2.0) * grid.info.resolution)
+        radius = int(math.ceil(effective_clearance / grid.info.resolution))
+        radius_sq = effective_clearance ** 2
+        for oy in range(-radius, radius + 1):
+            for ox in range(-radius, radius + 1):
+                if (ox * ox + oy * oy) * grid.info.resolution ** 2 > radius_sq:
+                    continue
+                gx, gy = cx + ox, cy + oy
+                if not (0 <= gx < grid.info.width and
+                        0 <= gy < grid.info.height):
+                    continue
+                if (grid.data[gy * grid.info.width + gx] >=
+                        self.obstacle_threshold):
+                    return True
+        return False
+
+    def _path_intersects_obstacle(self, start: tuple[float, float],
+                                  start_index: int) -> bool:
+        if self.obstacle_map is None:
+            return False
+        points = [start, *self.path[start_index:]]
+        step = max(0.02, self.obstacle_map.info.resolution * 0.5)
+        for first, second in zip(points, points[1:]):
+            distance = math.hypot(second[0] - first[0], second[1] - first[1])
+            count = max(1, int(math.ceil(distance / step)))
+            for index in range(count + 1):
+                fraction = index / count
+                x = first[0] + fraction * (second[0] - first[0])
+                y = first[1] + fraction * (second[1] - first[1])
+                if self._point_blocked(x, y):
+                    return True
+        return False
 
     @staticmethod
     def _yaw(q) -> float:
@@ -191,9 +372,48 @@ class TerrainPathFollower(Node):
         self.cmd_pub.publish(Twist())
 
     def _tick(self) -> None:
+        # Preserve the retained GOAL_REACHED status after the mission gate
+        # transitions to COMPLETED. Motion stays stopped, and late acceptance
+        # subscribers can still observe the completion event.
+        if getattr(self, "reached", False):
+            self._publish_stop()
+            return
+        mission_gate = getattr(self, "mission_gate_enabled", False)
+        received = getattr(self, "mission_status_received_monotonic", None)
+        status_stale = (
+            mission_gate and
+            (received is None or time.monotonic() - received >
+             getattr(self, "mission_status_timeout", 1.5)))
+        if (mission_gate and (status_stale or
+                              not getattr(self, "mission_motion_allowed", False))):
+            reason = "STALE" if status_stale else getattr(
+                self, "mission_lifecycle_state", "UNKNOWN")
+            self.publish_status(
+                "INTEGRATION_MISSION_HOLD_STOP "
+                f"lifecycle={reason}")
+            self._publish_stop()
+            return
         if not self.path:
             self._publish_stop()
             return
+        if (self.path_received_monotonic is None or
+                time.monotonic() - self.path_received_monotonic >
+                self.path_timeout):
+            self.publish_status("INTEGRATION_STALE_TERRAIN_PLAN_STOP")
+            self._publish_stop()
+            return
+        if (self.require_obstacle_map and
+                self.obstacle_map_received_monotonic is None):
+            self.publish_status("INTEGRATION_WAITING_FOR_OBSTACLE_MAP_STOP")
+            self._publish_stop()
+            return
+        if self.obstacle_map_received_monotonic is not None:
+            if (self.obstacle_map is None or
+                    time.monotonic() - self.obstacle_map_received_monotonic >
+                    self.obstacle_map_timeout):
+                self.publish_status("INTEGRATION_STALE_OBSTACLE_MAP_STOP")
+                self._publish_stop()
+                return
         try:
             current_x, current_y, current_yaw = self._pose()
             goal = self._goal_map()
@@ -203,14 +423,6 @@ class TerrainPathFollower(Node):
             return
         if goal is None:
             self.publish_status("INTEGRATION_WAITING_FOR_GOAL")
-            self._publish_stop()
-            return
-        # Once the integrated follower has reached the active goal, hold a
-        # safe stop until a genuinely new goal arrives. SLAM map->odom updates
-        # can move the transformed pose by a few centimeters on later ticks;
-        # without this latch the follower could resume motion after reporting
-        # completion.
-        if self.reached:
             self._publish_stop()
             return
         goal_distance = math.hypot(goal[0] - current_x, goal[1] - current_y)
@@ -225,6 +437,9 @@ class TerrainPathFollower(Node):
                       key=lambda i: math.hypot(self.path[i][0] - current_x,
                                                self.path[i][1] - current_y))
         target_index = min(len(self.path) - 1, nearest + self.lookahead_cells)
+        if self._path_intersects_obstacle((current_x, current_y), nearest):
+            self._invalidate_path_for_obstacle()
+            return
         target_x, target_y = self.path[target_index]
         heading = math.atan2(target_y - current_y, target_x - current_x)
         error = angle_error(heading - current_yaw)
@@ -247,6 +462,9 @@ def main(args=None) -> None:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except Exception:
+        if rclpy.ok():
+            raise
     finally:
         try:
             node._publish_stop()

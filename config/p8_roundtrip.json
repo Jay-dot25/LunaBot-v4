@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "scenario_id": "p8_habitat_science_roundtrip",
+  "world_frame": "world",
+  "start_pose_world": {
+    "x": 0.0,
+    "y": 0.0,
+    "yaw": 0.0
+  },
+  "waypoints": [
+    {
+      "id": "habitat",
+      "name": "Habitat staging",
+      "pose_world": {
+        "x": 0.0,
+        "y": 6.0,
+        "yaw": 0.0
+      }
+    },
+    {
+      "id": "science",
+      "name": "Science staging",
+      "pose_world": {
+        "x": 3.3,
+        "y": 2.5,
+        "yaw": 0.0
+      }
+    }
+  ],
+  "itinerary": [
+    "habitat",
+    "science",
+    "habitat"
+  ],
+  "delivery_after_final_waypoint": true,
+  "map_binding_status": "pending_live_map_qualification",
+  "site_definition": "Habitat staging is 1.5 m east of the Habitat collision footprint and clear of the equipment. Science staging is 2.7 m west and 1.0 m south of the Science structure. Live route qualification is required before binding these world poses to a saved map."
+}

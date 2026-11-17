@@ -87,6 +87,12 @@ def validate_sdfs():
             local = uri.replace("file://", "")
             path = os.path.normpath(os.path.join(WORLD_DIR, local))
             check(f"terrain {kind} mesh exists ({local})", os.path.isfile(path), path)
+        mission_uri = terrain.find("link/collision[@name='mission_detail_collision']/geometry/mesh/uri")
+        check("mission-area detailed collision mesh declared", mission_uri is not None)
+        if mission_uri is not None:
+            local = mission_uri.text.replace("file://", "")
+            path = os.path.normpath(os.path.join(WORLD_DIR, local))
+            check(f"mission collision mesh exists ({local})", os.path.isfile(path), path)
 
     horizon = world.find("./model[@name='lunar_horizon']")
     check("horizon catch-plane present", horizon is not None)
@@ -166,8 +172,8 @@ def validate_topic_contract():
     for t in sorted(topics):
         check(f"bridge maps {t} (gazebo->ros)", f"{t}@sensor_msgs" in launch
               or f"{t}@nav_msgs" in launch)
-    check("bridge maps /cmd_vel (ros->gazebo)",
-          re.search(r"/cmd_vel@geometry_msgs/msg/Twist\]\S+\.Twist", launch) is not None)
+    check("bridge maps ROS /cmd_vel through guarded actuator request",
+          re.search(r"/lunabot/actuator_request@geometry_msgs/msg/Twist\]\S+\.Twist", launch) is not None and "/lunabot/actuator_request:=/cmd_vel" in launch)
     check("bridge maps /tf Pose_V -> TFMessage",
           re.search(r"/tf@tf2_msgs/msg/TFMessage\[\S+\.Pose_V", launch) is not None)
 
@@ -187,8 +193,9 @@ def validate_spawn_height():
 
 
 # ---------------------------------------------------------------- 4. OBJ meshes
-def validate_obj(path, expect_color):
-    n_v = n_vn = n_c = 0
+def validate_obj(path, expect_color, expected_vertices=None,
+                 expected_faces=None, expected_extent=None, expected_bounds=None):
+    n_v = n_vn = n_c = n_f = 0
     max_idx = 0
     bounds = [[1e9] * 3, [-1e9] * 3]
     with open(path) as fh:
@@ -207,18 +214,32 @@ def validate_obj(path, expect_color):
             elif p[0] == "c":
                 n_c += 1
             elif p[0] == "f":
+                n_f += 1
                 for ref in p[1:]:
                     max_idx = max(max_idx, int(ref.split("/")[0]))
     name = os.path.basename(path)
     check(f"{name}: has vertices", n_v > 0, str(n_v))
     check(f"{name}: vertex count square grid", int(round(n_v ** 0.5)) ** 2 == n_v, str(n_v))
+    if expected_vertices is not None:
+        check(f"{name}: expected design resolution", n_v == expected_vertices,
+              f"vertices={n_v}, expected={expected_vertices}")
     check(f"{name}: normals for all vertices", n_vn == n_v, f"vn={n_vn} v={n_v}")
     check(f"{name}: color vertices expected={expect_color}",
           (n_c == n_v) if expect_color else (n_c == 0), f"c={n_c}")
     check(f"{name}: face indices in bounds", 0 < max_idx <= n_v, str(max_idx))
+    if expected_faces is not None:
+        check(f"{name}: expected collision face count", n_f == expected_faces,
+              f"faces={n_f}, expected={expected_faces}")
     ext = [bounds[1][i] - bounds[0][i] for i in range(3)]
-    check(f"{name}: extent ~400x400 m", 395 < ext[0] < 405 and 395 < ext[1] < 405,
+    extent_ok = (395 < ext[0] < 405 and 395 < ext[1] < 405) if expected_extent is None else \
+        abs(ext[0] - expected_extent) < 0.02 and abs(ext[1] - expected_extent) < 0.02
+    check(f"{name}: extent matches design", extent_ok,
           str([round(e, 1) for e in ext]))
+    if expected_bounds is not None:
+        actual_bounds = (bounds[0][0], bounds[1][0], bounds[0][1], bounds[1][1])
+        bounds_ok = all(abs(a - e) < 0.02 for a, e in zip(actual_bounds, expected_bounds))
+        check(f"{name}: map bounds match design", bounds_ok,
+              f"actual={[round(v, 2) for v in actual_bounds]}, expected={expected_bounds}")
     check(f"{name}: relief within [-12, +10] m",
           bounds[1][2] < 10 and bounds[0][2] > -12,
           f"z=[{bounds[0][2]:.2f}, {bounds[1][2]:.2f}]")
@@ -283,8 +304,14 @@ def main():
     print("-- spawn height --")
     validate_spawn_height()
     print("-- meshes --")
-    validate_obj(VIS_OBJ, expect_color=True)
-    validate_obj(COL_OBJ, expect_color=False)
+    validate_obj(VIS_OBJ, expect_color=True, expected_vertices=320 * 320)
+    validate_obj(COL_OBJ, expect_color=False, expected_vertices=100 * 100,
+                 expected_faces=19264, expected_extent=396.0,
+                 expected_bounds=(-198.0, 198.0, -198.0, 198.0))
+    validate_obj(os.path.join(WORLD_DIR, "meshes", "lunar_terrain_mission_collision.obj"),
+                 expect_color=False, expected_vertices=53 * 53,
+                 expected_faces=2 * 52 * 52, expected_extent=52.0,
+                 expected_bounds=(-14.0, 38.0, -18.0, 34.0))
     print("-- scripts --")
     validate_scripts()
     print("-- rviz --")

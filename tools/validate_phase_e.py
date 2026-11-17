@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from static_contracts import shared_shutdown
 """Static Phase E gate: RGB-D terrain perception.
 
 This validator checks the independent launch-e contract and the approved
@@ -80,7 +81,7 @@ for rel, kind in [("src/lunabot_gazebo/worlds/lunar_world.sdf", "world"),
         check(f"{kind} SDF well-formed", False, str(exc))
 
 # The approved baseline remains a required static dependency.
-for rel, expected in [("tools/validate_phase_a.py", "80/80"),
+for rel, expected in [("tools/validate_phase_a.py", "96/96"),
                       ("tools/validate_phase_b.py", "103/103"),
                       ("tools/validate_phase_c.py", "133/133"),
                       ("tools/validate_phase_d.py", "152/152")]:
@@ -106,11 +107,11 @@ check("Phase E does not invoke an earlier launcher", "launch-d" not in noncommen
 check("Phase E has its own evidence directory", "phase-e-launch-e" in launch and
       "phase-d-launch-d" not in noncomment)
 check("Phase E is symlink-safe", 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' in launch)
-check("Phase E uses process groups", "setsid" in launch and "stop_group()" in launch)
+check("Phase E uses process groups", "setsid" in launch and shared_shutdown(launch))
 check("Phase E has a shutdown trap", "trap 'shutdown 130' INT TERM" in launch)
 check("Phase E cleans perception process", "PERCEPTION_PID" in launch and
       'stop_group "$PERCEPTION_PID"' in launch)
-check("Phase E has bounded shutdown", 'kill -KILL -"$pid"' in launch)
+check("Phase E has bounded shutdown", shared_shutdown(launch))
 check("Phase E reports its clean shutdown", "Launch E environment cleanly closed." in launch)
 check("Phase E preserves the Phase D planner", 'NAV_PATH="$REPO_DIR/scripts/astar_navigation.py"' in launch)
 check("Phase E preserves one SLAM system", "ros2 launch slam_toolbox online_async_launch.py" in launch and
@@ -143,7 +144,9 @@ check("perception does not alter navigation commands", "/cmd_vel" not in percept
 
 # Phase E launcher carries the sensor and runtime contracts.
 check("Phase E resolves the perception path", 'PERCEPTION_PATH="$REPO_DIR/scripts/terrain_segmentation.py"' in launch)
-check("Phase E starts perception directly", 'python3 "$PERCEPTION_PATH" --ros-args' in launch)
+check("Phase E prepares the qualified P5-03 runtime",
+      'p502_prepare_runtime "$REPO_DIR"' in launch and
+      'setsid "$P502_PYTHON" "$PERCEPTION_PATH" --ros-args' in launch)
 check("Phase E bridges the existing depth topic", '"/lunabot/depth/image_raw@sensor_msgs/msg/Image' in launch)
 check("Phase E keeps the existing RGB topic", '"/lunabot/camera/image_raw@sensor_msgs/msg/Image' in launch)
 check("Phase E validates depth at runtime", 'topic_ok "topic /lunabot/depth/image_raw"' in launch)

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from static_contracts import shared_shutdown
 """Static Phase J gate: dynamic terrain-plan replanning.
 
 This validator checks the independent launch-j contract and the approved
@@ -125,7 +126,7 @@ check("Phase J is independent of launch-i", "launch-i" not in noncomment and
 check("Phase J has its own evidence directory", "phase-j-launch-j" in launch and
       "phase-i-launch-i" not in noncomment)
 check("Phase J is symlink-safe", 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' in launch)
-check("Phase J uses process groups", "setsid" in launch and "stop_group()" in launch)
+check("Phase J uses process groups", "setsid" in launch and shared_shutdown(launch))
 check("Phase J has a shutdown trap", "trap 'shutdown 130' INT TERM" in launch)
 check("Phase J cleans the dynamic monitor", "REPLAN_MONITOR_PID" in launch and
       'stop_group "$REPLAN_MONITOR_PID"' in launch and

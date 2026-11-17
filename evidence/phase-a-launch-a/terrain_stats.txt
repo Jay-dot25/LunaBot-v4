@@ -3,17 +3,23 @@ LunaBot V4 - Phase A - lunar terrain statistics
 seed                : 42
 extent_m            : 400.0
 visual_grid         : "320x320 (1.25 m)"
-collision_grid      : "100x100 (4.0 m)"
+collision_grid      : "100x100 (4.0 m context)"
+mission_collision_grid: "53x53 (1.0 m; 52x52 m patch)"
+context_collision_triangles: 19264
+mission_collision_triangles: 5408
+collision_triangles : 24672
 visual_vertices     : 102400
 visual_triangles    : 203522
-z_min_m             : -9.389
-z_max_m             : 4.97
-z_mean_m            : 0.126
+z_min_m             : -10.959
+z_max_m             : 0.938
+z_mean_m            : -3.646
 spawn_height_m      : -2.788
-craters             : {"large": 7, "medium": 70, "small": 220}
-large_craters       : [{"x": 159.1, "y": -157.2, "R_m": 41.3, "depth_m": 8.42}, {"x": -105.5, "y": 155.4, "R_m": 38.3, "depth_m": 6.6}, {"x": 65.2, "y": -79.4, "R_m": 35.8, "depth_m": 6.64}, {"x": -142.0, "y": 42.3, "R_m": 34.7, "depth_m": 5.87}, {"x": 0.2, "y": 165.6, "R_m": 34.2, "depth_m": 5.86}, {"x": 160.7, "y": 129.7, "R_m": 27.5, "depth_m": 4.49}, {"x": 149.2, "y": 20.4, "R_m": 25.7, "depth_m": 3.61}]
+max_slope_deg       : 41.0
+steep_slope_cells_gt_20deg: 4028
+craters             : {"canonical": 3, "large": 8, "medium": 60, "small": 180}
+canonical_craters   : [{"name": "Crater A", "cx": 14.0, "cy": 10.0, "R_m": 6.5, "depth_m": 1.4, "rim_h_m": 0.5}, {"name": "Crater B", "cx": -2.0, "cy": 20.0, "R_m": 2.5, "depth_m": 0.65, "rim_h_m": 0.18}, {"name": "Crater C", "cx": 28.0, "cy": -8.0, "R_m": 1.5, "depth_m": 0.35, "rim_h_m": 0.1}]
 visual_obj_mb       : 16.3
-collision_obj_mb    : 1.2
+collision_obj_mb    : 1.5
 
 Suggested rover spawn (model root z):
   z = -2.308 m   # wheel bottom = model_root_z - 0.43, +5 cm drop margin

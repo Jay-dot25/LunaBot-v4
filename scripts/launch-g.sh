@@ -24,6 +24,7 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$REPO_DIR/scripts/p502_runtime.sh"
 WORLD_DIR="$REPO_DIR/src/lunabot_gazebo/worlds"
 WORLD_PATH="$WORLD_DIR/lunar_world.sdf"
 MODEL_PATH="$REPO_DIR/src/lunabot_gazebo/models/lunabot_v4/model.sdf"
@@ -36,7 +37,7 @@ PERCEPTION_PATH="$REPO_DIR/scripts/terrain_segmentation.py"
 MAPPER_PATH="$REPO_DIR/scripts/semantic_terrain_mapper.py"
 COST_PATH="$REPO_DIR/scripts/terrain_cost_mapper.py"
 RVIZ_CONFIG="$REPO_DIR/rviz/phase_g.rviz"
-EVIDENCE_DIR="$REPO_DIR/evidence/phase-g-launch-g"
+EVIDENCE_DIR="${EVIDENCE_DIR:-$REPO_DIR/evidence/phase-g-launch-g}"
 LOG_FILE="$EVIDENCE_DIR/last_run.log"
 
 SPAWN_Z="-2.308"
@@ -51,6 +52,7 @@ GAZEBO_PID=""
 BRIDGE_PID=""
 RVIZ_PID=""
 CONTROL_PID=""
+HEALTH_PID=""
 ODOM_PID=""
 SLAM_PID=""
 NAV_PID=""
@@ -71,16 +73,25 @@ log() { echo "$@" >> "$LOG_FILE"; }
 
 # Terminate a launcher/node process group, wait briefly, then force-kill only
 # that group. This prevents a Phase G relaunch from inheriting old children.
-stop_group() {
-  local pid="${1:-}"
-  [ -n "$pid" ] || return 0
-  kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
-  for _ in $(seq 1 20); do
-    kill -0 "$pid" 2>/dev/null || return 0
-    sleep 0.25
-  done
-  kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
-}
+source "$REPO_DIR/scripts/process_helpers.sh"
+WSL_SOFTWARE_PROFILE="${WSL_SOFTWARE_PROFILE:-}"
+SAFETY_CONFIG="$REPO_DIR/config/safety/control.json"
+HEALTH_REPORT_TIMEOUT_WALL_SEC="0.5"
+if [ "$HEADLESS" = "1" ] && grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease 2>/dev/null; then
+  WSL_SOFTWARE_PROFILE="${WSL_SOFTWARE_PROFILE:-1}"
+fi
+WSL_SOFTWARE_PROFILE="${WSL_SOFTWARE_PROFILE:-0}"
+if [ "$WSL_SOFTWARE_PROFILE" = "1" ]; then
+  export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+  export LP_NUM_THREADS="${LP_NUM_THREADS:-2}"
+  export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+  export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+  export FASTDDS_BUILTIN_TRANSPORTS="${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
+  export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}"
+  export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
+  HEALTH_REPORT_TIMEOUT_WALL_SEC="2.0"
+  SAFETY_CONFIG="$EVIDENCE_DIR/wsl_software_safety_profile.json"
+fi
 
 save_final_map() {
   [ "$MAP_SAVE_DONE" = "1" ] && return 0
@@ -153,6 +164,7 @@ shutdown() {
   [ -n "$BRIDGE_PID" ] && stop_group "$BRIDGE_PID"
   for p in ${TF_PIDS[@]+"${TF_PIDS[@]}"}; do stop_group "$p"; done
   [ -n "$RVIZ_PID" ] && stop_group "$RVIZ_PID"
+  [ -n "$HEALTH_PID" ] && stop_group "$HEALTH_PID"
   if [ -n "$GAZEBO_PID" ]; then
     kill -TERM -"$GAZEBO_PID" 2>/dev/null || kill -TERM "$GAZEBO_PID" 2>/dev/null || true
     for _ in $(seq 1 20); do
@@ -199,8 +211,9 @@ say "Launch mode: $([ "$HEADLESS" = 1 ] && echo HEADLESS || echo GUI) | demo=$([
 echo "[1/17] Checking Phase A baseline + Phase G files....."
 missing=0
 for f in "$WORLD_PATH" "$MODEL_PATH" "$WASD_PATH" "$CONTROL_PATH" "$ODOM_PATH" "$SLAM_CONFIG" "$NAV_PATH" \
-         "$RVIZ_CONFIG" "$PERCEPTION_PATH" "$MAPPER_PATH" "$COST_PATH" "$WORLD_DIR/meshes/lunar_terrain.obj" \
-         "$WORLD_DIR/meshes/lunar_terrain_collision.obj"; do
+         "$RVIZ_CONFIG" "$PERCEPTION_PATH" "$MAPPER_PATH" "$COST_PATH" "$REPO_DIR/scripts/p502_runtime.sh" "$WORLD_DIR/meshes/lunar_terrain.obj" \
+         "$WORLD_DIR/meshes/lunar_terrain_collision.obj" \
+         "$WORLD_DIR/meshes/lunar_terrain_mission_collision.obj"; do
   if [ ! -f "$f" ]; then
     say "      MISSING: $f"
     missing=1
@@ -226,6 +239,10 @@ fi
 # ROS setup.bash references AMENT_TRACE_SETUP_FILES unguarded.
 set +u
 source /opt/ros/humble/setup.bash
+if [ "$WSL_SOFTWARE_PROFILE" = "1" ]; then
+  export ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
+  export FASTDDS_BUILTIN_TRANSPORTS="${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
+fi
 set -u
 if ! command -v ros2 >/dev/null 2>&1; then
   echo "      ERROR: ros2 CLI not found after sourcing."
@@ -278,7 +295,9 @@ fi
 # A prior interrupted `ros2 run` can leave its child bridge alive. Remove
 # only processes belonging to this Phase G command/node contract.
 for pattern in "ros_ign_bridge.*parameter_bridge" "ros_gz_bridge.*parameter_bridge" \
-               "scripts/control_odometry.py" "scripts/odometry_monitor.py" "scripts/astar_navigation.py" "slam_toolbox.*online_async"; do
+               "scripts/control_odometry.py" "scripts/health_monitor.py" "scripts/odometry_monitor.py" \
+               "scripts/terrain_segmentation.py" "scripts/semantic_terrain_mapper.py" \
+               "scripts/terrain_cost_mapper.py" "scripts/astar_navigation.py" "slam_toolbox.*online_async"; do
   for p in $(pgrep -f "$pattern" 2>/dev/null || true); do
     kill -TERM "$p" 2>/dev/null || true
   done
@@ -288,6 +307,8 @@ echo "      clean state: OK"
 log "[3/17] clean state OK"
 
 # ------------------------------------------------------------
+source "$REPO_DIR/scripts/prepare_safety_plugin.sh"
+
 # [4/17] Start Gazebo - same validated Phase A world
 # ------------------------------------------------------------
 echo "[4/17] Starting Gazebo lunar world.................."
@@ -347,14 +368,16 @@ log "[5/17] spawn OK (z=$SPAWN_Z)"
 echo "[6/17] Starting ROS 2 <-> Gazebo bridge............."
 : > "$EVIDENCE_DIR/bridge.log"
 setsid ros2 run "$BRIDGE_PKG" parameter_bridge \
-  "/cmd_vel@geometry_msgs/msg/Twist]$MSGNS.Twist" \
+  "/lunabot/actuator_request@geometry_msgs/msg/Twist]$MSGNS.Twist" \
   "/clock@rosgraph_msgs/msg/Clock[$MSGNS.Clock" \
   "/lunabot/camera/image_raw@sensor_msgs/msg/Image[$MSGNS.Image" \
+  "/lunabot/camera/camera_info@sensor_msgs/msg/CameraInfo[$MSGNS.CameraInfo" \
   "/lunabot/depth/image_raw@sensor_msgs/msg/Image[$MSGNS.Image" \
+  "/lunabot/depth/camera_info@sensor_msgs/msg/CameraInfo[$MSGNS.CameraInfo" \
   "/lunabot/lidar/scan@sensor_msgs/msg/LaserScan[$MSGNS.LaserScan" \
   "/lunabot/imu@sensor_msgs/msg/Imu[$MSGNS.IMU" \
   "/lunabot/odom@nav_msgs/msg/Odometry[$MSGNS.Odometry" \
-  "/lunabot/joint_states@sensor_msgs/JointState[$MSGNS.Model" \
+  "/lunabot/joint_states@sensor_msgs/msg/JointState[$MSGNS.Model" \
   "/tf@tf2_msgs/msg/TFMessage[$MSGNS.Pose_V" \
   "/lunabot/steer/front_left@std_msgs/msg/Float64]$MSGNS.Double" \
   "/lunabot/steer/front_right@std_msgs/msg/Float64]$MSGNS.Double" \
@@ -362,6 +385,8 @@ setsid ros2 run "$BRIDGE_PKG" parameter_bridge \
   "/lunabot/steer/rear_right@std_msgs/msg/Float64]$MSGNS.Double" \
   "/lunabot/mast/pan@std_msgs/msg/Float64]$MSGNS.Double" \
   "/lunabot/mast/tilt@std_msgs/msg/Float64]$MSGNS.Double" \
+  "/lunabot/actuator_watchdog/state@std_msgs/msg/String[$MSGNS.StringMsg" \
+  --ros-args -r /lunabot/actuator_request:=/cmd_vel \
   >> "$EVIDENCE_DIR/bridge.log" 2>&1 &
 BRIDGE_PID=$!
 sleep 3
@@ -373,8 +398,11 @@ log "[6/17] bridge OK (pid $BRIDGE_PID)"
 # [7/17] Phase G RGB-D terrain segmentation
 # ------------------------------------------------------------
 echo "[7/17] Starting terrain segmentation................"
+if ! p502_prepare_runtime "$REPO_DIR"; then
+  abort "qualified P5-03 three-class runtime or dependencies are unavailable"
+fi
 : > "$EVIDENCE_DIR/segmentation.log"
-setsid python3 "$PERCEPTION_PATH" --ros-args \
+setsid "$P502_PYTHON" "$PERCEPTION_PATH" --ros-args \
   -p image_topic:=/lunabot/camera/image_raw \
   -p depth_topic:=/lunabot/depth/image_raw \
   -p mask_topic:=/lunabot/terrain/segmentation \
@@ -433,13 +461,17 @@ log "[9/17] cost mapper OK (pid $COST_PID)"
 # ------------------------------------------------------------
 echo "[10/17] Starting static TF (sensor frames)............"
 TF_SPECS=(
-  "chassis|sensor_head|0.18 0 0.85 0 0 0"
-  "sensor_head|rgb_camera|0.14 0 0 0 0 0"
-  "sensor_head|depth_camera|0.14 0 -0.04 0 0 0"
+  "sensor_head|rgb_camera|0.14 0 0 0 0.25 0"
+  "sensor_head|depth_camera|0.14 0 -0.04 0 0.25 0"
   "sensor_head|lidar|0.02 0 0.09 0 0.5 0"
   # Gazebo Fortress scopes the LaserScan frame in the message. Keep the
   # Phase B unscoped alias and add the exact frame used by slam_toolbox.
   "sensor_head|lunabot_v4/sensor_head/lidar|0.02 0 0.09 0 0.5 0"
+  # Scoped sensor headers and ROS optical camera axes.
+  "chassis|imu_link|0 0 0.10 0 0 0"
+  "imu_link|lunabot_v4/imu_link/imu|0 0 0 0 0 0"
+  "rgb_camera|lunabot_v4/sensor_head/rgb_camera|0 0 0 -1.5707963267948966 0 -1.5707963267948966"
+  "depth_camera|lunabot_v4/sensor_head/depth_camera|0 0 0 -1.5707963267948966 0 -1.5707963267948966"
 )
 for spec in "${TF_SPECS[@]}"; do
   IFS='|' read -r parent child xyzrpy <<< "$spec"
@@ -448,7 +480,12 @@ for spec in "${TF_SPECS[@]}"; do
     >> "$EVIDENCE_DIR/gazebo.log" 2>&1 &
   TF_PIDS+=("$!")
 done
-echo "      5 static transforms published (including scoped Gazebo LaserScan frame)"
+# Articulated mast transform follows measured joints, not a fixed neutral pose.
+setsid python3 "$REPO_DIR/scripts/sensor_mount_tf.py" \
+  >> "$EVIDENCE_DIR/gazebo.log" 2>&1 &
+TF_PIDS+=("$!")
+
+echo "      8 static transforms + dynamic mast published (including scoped Gazebo LaserScan frame)"
 log "[10/17] static TF OK"
 
 # ------------------------------------------------------------
@@ -456,8 +493,17 @@ log "[10/17] static TF OK"
 # ------------------------------------------------------------
 echo "[11/17] Starting Phase G control layer................"
 : > "$EVIDENCE_DIR/control.log"
-setsid python3 "$CONTROL_PATH" \
-  --input-topic /cmd_vel_in --output-topic /cmd_vel \
+if [ "$WSL_SOFTWARE_PROFILE" = "1" ]; then
+  python3 "$REPO_DIR/tools/make_p8_safety_profile.py" \
+    --source "$REPO_DIR/config/safety/control.json" --output "$SAFETY_CONFIG" \
+    --health-report-timeout-wall-sec "$HEALTH_REPORT_TIMEOUT_WALL_SEC" \
+    >> "$EVIDENCE_DIR/safety_profile.log" 2>&1 || abort "could not create WSL software safety profile"
+fi
+setsid python3 "$REPO_DIR/scripts/health_monitor.py" --config "$SAFETY_CONFIG" --require-map --path-topic /plan \
+  >> "$EVIDENCE_DIR/health.log" 2>&1 &
+HEALTH_PID=$!
+setsid python3 "$CONTROL_PATH" --config "$SAFETY_CONFIG" \
+  --input-topic /cmd_vel_in --output-topic /cmd_vel --require-map --path-topic /plan \
   --max-linear 0.45 --max-angular 1.0 \
   --max-linear-accel 0.4 --max-angular-accel 0.8 \
   --watchdog-sec 0.5 --rate 30 \
@@ -600,16 +646,29 @@ type_ok() {
   return 1
 }
 
+# Startup authorization; never automatically clears a runtime health/stop latch.
+if ! python3 "$REPO_DIR/scripts/arm_safety.py" --timeout 60; then
+  echo "ERROR: safety startup arming failed"
+  shutdown 1
+fi
 topic_ok() {
   local sample=""
   local durability="volatile"
+  local field_args=()
   case "$2" in
-    /map|/plan|/lunabot/navigation/status|/lunabot/terrain/semantic_map|/lunabot/terrain/semantic_map/status|/lunabot/terrain/cost_map|/lunabot/terrain/cost_map/status) durability="transient_local" ;;
+    /lunabot/depth/image_raw|/lunabot/camera/image_raw|/lunabot/lidar/scan|/lunabot/imu)
+      # Print only the compact header: full RGB-D payload serialization can
+      # exceed the topic timeout even when the sensor is publishing normally.
+      field_args=(--field header)
+      ;;
+  esac
+  case "$2" in
+    /map|/plan|/lunabot/navigation/status|/lunabot/terrain/semantic_map|/lunabot/terrain/semantic_map/status|/lunabot/terrain/semantic_map/slope|/lunabot/terrain/semantic_map/roughness|/lunabot/terrain/semantic_map/crater_risk|/lunabot/terrain/semantic_map/uncertainty|/lunabot/terrain/cost_map|/lunabot/terrain/cost_map/status) durability="transient_local" ;;
   esac
   # Do not pipe to head: head can exit successfully before ros2 receives a
   # message, creating a false PASS. This assignment waits for --once data.
   if sample="$(timeout 30 ros2 topic echo "$2" --qos-reliability best_effort \
-      --qos-durability "$durability" --once 2>/dev/null)" && [ -n "$sample" ]; then
+      --qos-durability "$durability" "${field_args[@]}" --once 2>/dev/null)" && [ -n "$sample" ]; then
     # /map must be an OccupancyGrid-shaped message, not merely any message.
     if [ "$2" = "/map" ] && { [[ "$sample" != *"info:"* ]] || [[ "$sample" != *"data:"* ]]; }; then
       sample=""
@@ -738,39 +797,40 @@ type_ok "type terrain status std_msgs/String" "/lunabot/terrain/segmentation/sta
 topic_ok "topic /lunabot/terrain/segmentation" "/lunabot/terrain/segmentation"
 topic_ok "topic /lunabot/terrain/overlay"      "/lunabot/terrain/overlay"
 topic_ok "topic /lunabot/terrain/segmentation/status" "/lunabot/terrain/segmentation/status"
-segmentation_status="$(timeout 15 ros2 topic echo /lunabot/terrain/segmentation/status --qos-reliability best_effort --qos-durability transient_local --once 2>/dev/null || true)"
-if printf '%s\n' "$segmentation_status" | grep -q "SEGMENTATION_PASS"; then
+if wait_for_topic_token "/lunabot/terrain/segmentation/status" "SEGMENTATION_PASS" 30; then
   echo "      terrain segmentation content: PASS"
   log "validation PASS: SEGMENTATION_PASS status"
 else
   echo "      terrain segmentation content: FAIL"
-  log "validation FAIL: segmentation status was [$segmentation_status]"
+  log "validation FAIL: SEGMENTATION_PASS was not published"
   OVERALL="FAIL"
 fi
 type_ok "type semantic map nav_msgs/OccupancyGrid" "/lunabot/terrain/semantic_map" "nav_msgs/msg/OccupancyGrid"
 type_ok "type semantic map status std_msgs/String" "/lunabot/terrain/semantic_map/status" "std_msgs/msg/String"
 topic_ok "topic /lunabot/terrain/semantic_map" "/lunabot/terrain/semantic_map"
 topic_ok "topic /lunabot/terrain/semantic_map/status" "/lunabot/terrain/semantic_map/status"
-semantic_status="$(timeout 15 ros2 topic echo /lunabot/terrain/semantic_map/status --qos-reliability best_effort --qos-durability transient_local --once 2>/dev/null || true)"
-if printf '%s\n' "$semantic_status" | grep -q "SEMANTIC_MAP_PASS"; then
+if wait_for_topic_token "/lunabot/terrain/semantic_map/status" "SEMANTIC_MAP_PASS" 45; then
   echo "      semantic map content: PASS"
   log "validation PASS: SEMANTIC_MAP_PASS status"
 else
   echo "      semantic map content: FAIL"
-  log "validation FAIL: semantic map status was [$semantic_status]"
+  log "validation FAIL: SEMANTIC_MAP_PASS was not published"
   OVERALL="FAIL"
 fi
 type_ok "type cost map nav_msgs/OccupancyGrid" "/lunabot/terrain/cost_map" "nav_msgs/msg/OccupancyGrid"
 type_ok "type cost map status std_msgs/String" "/lunabot/terrain/cost_map/status" "std_msgs/msg/String"
 topic_ok "topic /lunabot/terrain/cost_map" "/lunabot/terrain/cost_map"
 topic_ok "topic /lunabot/terrain/cost_map/status" "/lunabot/terrain/cost_map/status"
-cost_status="$(timeout 15 ros2 topic echo /lunabot/terrain/cost_map/status --qos-reliability best_effort --qos-durability transient_local --once 2>/dev/null || true)"
-if printf '%s\n' "$cost_status" | grep -q "COST_MAP_PASS"; then
+for layer in slope roughness crater_risk uncertainty; do
+  type_ok "type semantic $layer layer" "/lunabot/terrain/semantic_map/$layer" "nav_msgs/msg/OccupancyGrid"
+  topic_ok "topic semantic $layer layer" "/lunabot/terrain/semantic_map/$layer"
+done
+if wait_for_topic_token "/lunabot/terrain/cost_map/status" "COST_MAP_PASS" 45; then
   echo "      cost map content: PASS"
   log "validation PASS: COST_MAP_PASS status"
 else
   echo "      cost map content: FAIL"
-  log "validation FAIL: cost map status was [$cost_status]"
+  log "validation FAIL: COST_MAP_PASS was not published"
   OVERALL="FAIL"
 fi
 if [ "$DEMO" = "1" ]; then
@@ -807,6 +867,10 @@ if [ "$EVIDENCE" = "1" ]; then
     > "$EVIDENCE_DIR/semantic_map_sample.txt"
   timeout 20 ros2 topic echo /lunabot/terrain/semantic_map/status --qos-reliability best_effort --qos-durability transient_local --once 2>/dev/null \
     > "$EVIDENCE_DIR/semantic_map_status.txt"
+  for layer in slope roughness crater_risk uncertainty; do
+    timeout 20 ros2 topic echo "/lunabot/terrain/semantic_map/$layer" --qos-reliability best_effort --qos-durability transient_local --once 2>/dev/null \
+      > "$EVIDENCE_DIR/semantic_${layer}_sample.txt"
+  done
   timeout 20 ros2 topic echo /lunabot/terrain/cost_map --qos-reliability best_effort --qos-durability transient_local --once 2>/dev/null \
     > "$EVIDENCE_DIR/cost_map_sample.txt"
   timeout 20 ros2 topic echo /lunabot/terrain/cost_map/status --qos-reliability best_effort --qos-durability transient_local --once 2>/dev/null \
@@ -865,7 +929,7 @@ echo "Terrain perception: RUNNING (RGB-D segmentation)"
 echo "Semantic mapping  : RUNNING (map-frame terrain grid)"
 echo "Terrain cost map  : RUNNING (inflated traversability costs)"
 echo "Bridge            : RUNNING (16 mappings)"
-echo "TF                : RUNNING (odom->chassis + 5 static)"
+echo "TF                : RUNNING (odom->chassis + 8 static + dynamic mast)"
 printf "RViz2             : %s\n" "$( [ "$HEADLESS" = 1 ] && echo "skipped (headless)" || echo "RUNNING" )"
 echo ""
 echo "------------------------------------------------------------"
@@ -887,6 +951,7 @@ echo "  /lunabot/terrain/semantic_map nav_msgs/OccupancyGrid"
 echo "  /lunabot/terrain/semantic_map/status std_msgs/String"
 echo "  /lunabot/terrain/cost_map nav_msgs/OccupancyGrid"
 echo "  /lunabot/terrain/cost_map/status std_msgs/String"
+echo "  /lunabot/terrain/semantic_map/{slope,roughness,crater_risk,uncertainty} nav_msgs/OccupancyGrid"
 echo "  map -> odom                  TF (SLAM localization)"
 echo "  evidence/phase-g-launch-g/map_sample.txt"
 echo "  evidence/phase-g-launch-g/phase_g_map.yaml/.pgm"

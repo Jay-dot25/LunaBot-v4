@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "dashboard_id": "lunabot-six-view-v1",
+  "map_frame": "map",
+  "read_only_topics": [
+    "/lunabot/dashboard/telemetry", "/lunabot/dashboard/control_status", "/lunabot/safety/health", "/lunabot/safety/stopped", "/lunabot/control/status",
+    "/lunabot/mission/status", "/lunabot/mission/events", "/lunabot/autonomy/status",
+    "/lunabot/autonomy/replan_status", "/lunabot/evaluation/status",
+    "/lunabot/camera/image_raw", "/lunabot/camera/camera_info",
+    "/lunabot/depth/image_raw", "/lunabot/depth/camera_info", "/lunabot/lidar/scan",
+    "/lunabot/imu", "/lunabot/joint_states", "/lunabot/odom", "/tf", "/tf_static",
+    "/map", "/goal_pose", "/plan", "/lunabot/terrain/segmentation",
+    "/lunabot/terrain/segmentation_confidence", "/lunabot/terrain/overlay",
+    "/lunabot/terrain/semantic_map", "/lunabot/terrain/semantic_map/confidence",
+    "/lunabot/terrain/semantic_map/age", "/lunabot/terrain/semantic_map/slope",
+    "/lunabot/terrain/semantic_map/roughness", "/lunabot/terrain/semantic_map/crater_risk",
+    "/lunabot/terrain/semantic_map/uncertainty", "/lunabot/terrain/cost_map",
+    "/lunabot/terrain/plan", "/lunabot/terrain/planner/status"
+  ],
+  "views": [
+    {"view_id":"system_health","title":"System and mission health","topics":["/lunabot/safety/health","/lunabot/safety/stopped","/lunabot/control/status","/lunabot/mission/status","/lunabot/autonomy/status","/lunabot/evaluation/status"],"metadata_topic":"/lunabot/dashboard/telemetry","show_source_stamp":true,"show_receive_age":true,"show_stale_state":true},
+    {"view_id":"sensors_and_perception","title":"Sensors and perception","topics":["/lunabot/camera/image_raw","/lunabot/depth/image_raw","/lunabot/terrain/segmentation","/lunabot/terrain/segmentation_confidence","/lunabot/terrain/overlay","/lunabot/lidar/scan","/lunabot/imu"],"metadata_topic":"/lunabot/dashboard/telemetry","show_source_stamp":true,"show_receive_age":true,"show_stale_state":true},
+    {"view_id":"map_and_localization","title":"Map and localization","topics":["/map","/tf","/tf_static","/lunabot/odom","/goal_pose","/plan"],"metadata_topic":"/lunabot/dashboard/telemetry","frame":"map","show_source_stamp":true,"show_receive_age":true,"show_stale_state":true},
+    {"view_id":"terrain_layers","title":"Terrain and risk layers","topics":["/lunabot/terrain/semantic_map","/lunabot/terrain/semantic_map/confidence","/lunabot/terrain/semantic_map/age","/lunabot/terrain/semantic_map/slope","/lunabot/terrain/semantic_map/roughness","/lunabot/terrain/semantic_map/crater_risk","/lunabot/terrain/semantic_map/uncertainty","/lunabot/terrain/cost_map"],"metadata_topic":"/lunabot/dashboard/telemetry","frame":"map","show_source_stamp":true,"show_receive_age":true,"show_stale_state":true},
+    {"view_id":"planning_and_evaluation","title":"Planning and evaluation","topics":["/lunabot/terrain/plan","/lunabot/terrain/planner/status","/lunabot/autonomy/replan_status","/lunabot/evaluation/status","/lunabot/mission/events"],"metadata_topic":"/lunabot/dashboard/telemetry","frame":"map","show_source_stamp":true,"show_receive_age":true,"show_stale_state":true},
+    {"view_id":"mission_and_safety_controls","title":"Mission and safety controls","topics":["/lunabot/mission/status","/lunabot/mission/events","/lunabot/safety/health","/lunabot/safety/stopped","/lunabot/control/status","/lunabot/dashboard/control_status"],"metadata_topic":"/lunabot/dashboard/telemetry","write_topics":["/lunabot/dashboard/command_request"],"call_services":[],"confirm_commands":["CANCEL","ESTOP","RESET_ESTOP"],"show_source_stamp":true,"show_receive_age":true,"show_stale_state":true,"require_fresh_status":true}
+  ],
+  "write_contract": {
+    "topic_types": {"/lunabot/dashboard/command_request":"std_msgs/msg/String","/lunabot/mission/command":"std_msgs/msg/String"},
+    "allowed_mission_commands": ["PAUSE","RESUME","CANCEL","RECOVER","ESTOP","RESET_ESTOP","DELIVER <delivery-id>"],
+    "service_types": {"/lunabot/safety/emergency_stop":"std_srvs/srv/Trigger","/lunabot/safety/reset":"std_srvs/srv/Trigger","/lunabot/safety/arm_startup":"std_srvs/srv/Trigger"},
+    "require_fresh_mission_status_seconds": 1.5,
+    "require_fresh_safety_health_seconds": 0.5,
+    "velocity_publish_allowed": false,
+    "forbidden_write_topics": ["/cmd_vel","/cmd_vel_in","/lunabot/actuator_request","/world/lunar_world/pose/info"],
+    "operational_truth_access": false
+  },
+  "telemetry_contract": {
+    "keep_original_header_stamps": true,
+    "map_and_plan_frame": "map",
+    "attach_monotonic_receive_time": true,
+    "show_age_and_fresh_stale_unknown": true,
+    "sensor_stamp_age_limit_sim_seconds": 0.25,
+    "sensor_rates_hz": {"/lunabot/camera/image_raw":20,"/lunabot/depth/image_raw":15,"/lunabot/lidar/scan":10,"/lunabot/imu":100,"/lunabot/odom":30},
+    "notes": "Configured sensor rates and 0.25s age are initial diagnostics contracts, not live guarantees for every launch profile. Use simulation stamps for sensor age and local monotonic receive times for dashboard render age."
+  }
+}

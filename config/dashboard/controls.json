@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "request_topic": "/lunabot/dashboard/command_request",
+  "status_topic": "/lunabot/dashboard/control_status",
+  "mission_status_topic": "/lunabot/mission/status",
+  "safety_health_topic": "/lunabot/safety/health",
+  "mission_command_topic": "/lunabot/mission/command",
+  "fresh_mission_status_seconds": 1.5,
+  "fresh_safety_health_seconds": 0.5,
+  "mission_commands": ["PAUSE", "RESUME", "CANCEL", "RECOVER", "DELIVER"],
+  "confirmed_actions": ["CANCEL", "ESTOP", "RESET_ESTOP"],
+  "safety_services": {
+    "ESTOP": "/lunabot/safety/emergency_stop",
+    "RESET_ESTOP": "/lunabot/safety/reset",
+    "ARM_STARTUP": "/lunabot/safety/arm_startup"
+  },
+  "safety_service_type": "std_srvs/srv/Trigger"
+}

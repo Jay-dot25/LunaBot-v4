@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from static_contracts import shared_shutdown
 """Static Phase D gate: A* autonomous navigation.
 
 This validator checks the independent Phase D repository contract and the
@@ -79,7 +80,7 @@ for rel, kind in [("src/lunabot_gazebo/worlds/lunar_world.sdf", "world"),
         check(f"{kind} SDF well-formed", False, str(exc))
 
 # Earlier phase static gates remain part of the Phase D baseline.
-for rel, expected in [("tools/validate_phase_a.py", "80/80"),
+for rel, expected in [("tools/validate_phase_a.py", "96/96"),
                       ("tools/validate_phase_b.py", "103/103"),
                       ("tools/validate_phase_c.py", "133/133")]:
     r = run([sys.executable, rel])
@@ -104,11 +105,11 @@ for old in ["launch-a", "launch-b", "launch-c"]:
 check("Phase D has its own evidence directory",
       "phase-d-launch-d" in launch and "phase-c-launch-c" not in noncomment)
 check("Phase D is symlink-safe", 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' in launch)
-check("Phase D uses process groups", "setsid" in launch and "stop_group()" in launch)
+check("Phase D uses process groups", "setsid" in launch and shared_shutdown(launch))
 check("Phase D has a shutdown trap", "trap 'shutdown 130' INT TERM" in launch)
 check("Phase D shuts down navigation before SLAM", 'stop_group "$NAV_PID"' in launch and
       launch.index('stop_group "$NAV_PID"') < launch.index('stop_group "$SLAM_PID"'))
-check("Phase D has bounded shutdown", 'kill -KILL -"$pid"' in launch)
+check("Phase D has bounded shutdown", shared_shutdown(launch))
 check("Phase D interrupts and cleans the goal wait", "GOAL_WAIT_PID" in launch and
       'stop_group "$GOAL_WAIT_PID"' in launch)
 check("Phase D cleans stale navigation nodes", "scripts/astar_navigation.py" in launch)
@@ -223,7 +224,7 @@ check("Phase D RViz has explicit Camera", "Value: /lunabot/camera/image_raw" in 
 check("Phase D RViz uses best effort sensor QoS", rviz.count("Reliability Policy: Best Effort") >= 2)
 check("Phase D RViz has explicit odometry", "Value: /lunabot/odom" in rviz)
 check("Phase D RViz provides Set Goal tool", "rviz_default_plugins/SetGoal" in rviz and
-      "Topic: /goal_pose" in rviz)
+      "Value: /goal_pose" in rviz)
 check("Phase D RViz displays selected goal", "Name: Selected Goal" in rviz and
       "Value: /goal_pose" in rviz)
 check("Phase D RViz stores map/odom TF", "map:\n          odom:" in rviz)

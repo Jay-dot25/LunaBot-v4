@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "decision_id": "ADR-006-p9-dashboard-prototype",
+  "review_date": "2026-11-13",
+  "preferred_stack_id": "foxglove_bridge_desktop",
+  "decision_state": "prototype_candidate_measure_before_release",
+  "candidates": [
+    {
+      "stack_id": "browser_ros_gateway",
+      "name": "Custom browser UI + rosbridge_suite gateway",
+      "ros2_support": "ROS 2 Humble rosbridge_suite WebSocket JSON API",
+      "streaming": "WebSocket JSON subscriptions and client topic/service calls; compress/throttle large streams and measure serialization cost.",
+      "maps": "Custom occupancy/terrain rendering, transforms, and time alignment are application work.",
+      "controls": "Custom controls publish only to /lunabot/dashboard/command_request and read its status topic; implement explicit confirmations, with the ROS gateway enforcing freshness and allowed actions.",
+      "latency_resources": "Not measured in this repository; JSON conversion and browser rendering need P9-03 measurement.",
+      "wsl_fit": "WSL ROS gateway can serve Windows browser via localhost; DDS remains inside the ROS workspace.",
+      "license": "rosbridge_suite BSD-3-Clause; web application dependency licenses must be tracked.",
+      "maintenance": "Highest UI and telemetry implementation cost; maximum layout/control flexibility.",
+      "evidence_urls": ["https://index.ros.org/p/rosbridge_suite/", "https://github.com/RobotWebTools/rosbridge_suite/blob/ros2/LICENSE"]
+    },
+    {
+      "stack_id": "foxglove_bridge_desktop",
+      "name": "Foxglove Desktop/Web + Foxglove Bridge",
+      "ros2_support": "Native ROS 2 bridge and Foxglove WebSocket data source; published ROS topic and service-call features are supported.",
+      "streaming": "C++ bridge is documented as high performance/low overhead; bridge supports allowlists, message limits, QoS overrides, and connection options.",
+      "maps": "Built-in 3D, Image, Plot, Raw Messages, and State Transitions panels cover most views; the 3D panel renders ROS OccupancyGrid. The separate Map panel is geospatial and is not the local SLAM map.",
+      "controls": "Use a Foxglove/custom panel that publishes JSON only to /lunabot/dashboard/command_request and reads /lunabot/dashboard/control_status. The guarded gateway forwards allowed mission commands and invokes Trigger safety services; do not expose direct mission/service controls. Actions are not supported by the documented live connection feature matrix.",
+      "latency_resources": "Not measured in this repository; C++ bridge is an implementation claim, not an observed rover benchmark.",
+      "wsl_fit": "Run bridge in Ubuntu WSL and connect a Windows desktop/browser client to localhost; validate image/map load on this WSL host in P9-02/03.",
+      "license": "ROS 2 bridge MIT; Foxglove visualization product uses plan/seat terms. Direct live connections require a Developer seat; verify current account plan before selecting it for release.",
+      "maintenance": "Lowest initial panel work; mission-specific safe controls and timestamp/provenance checks need a custom extension or bounded wrapper.",
+      "evidence_urls": ["https://docs.foxglove.dev/docs/getting-started/frameworks/ros2", "https://docs.foxglove.dev/docs/fleet/bridge", "https://docs.foxglove.dev/docs/visualization/connecting/live", "https://docs.foxglove.dev/docs/visualization/panels/3d", "https://docs.foxglove.dev/docs/visualization/panels/service-call", "https://github.com/foxglove/foxglove-sdk/blob/main/ros/src/foxglove_bridge/README.md"]
+    },
+    {
+      "stack_id": "native_qt_rviz_rqt",
+      "name": "Native Qt/Python + RViz2 + rqt plugins",
+      "ros2_support": "Direct ROS 2 DDS using the existing Humble environment; RViz2 and rqt are maintained ROS packages.",
+      "streaming": "Native ROS subscriptions avoid a browser gateway; local per-process queues/QoS still require explicit configuration.",
+      "maps": "RViz2 already has project configurations and native OccupancyGrid, TF, image, point-cloud and marker displays.",
+      "controls": "rqt service/topic plugins exist; a custom Qt panel should publish only to the guarded dashboard request topic and display gateway results.",
+      "latency_resources": "Not measured for the six-view workload; existing WSL RViz use proves only that some GUI profiles work, not that the dashboard meets a budget.",
+      "wsl_fit": "Best same-WSL process fit and WSLg can display Linux GUI apps; current repository reports RViz optional and some headless profiles are software-rendered.",
+      "license": "RViz2 and rqt ROS packages are BSD-licensed; review all Qt/plugin dependencies when packaging.",
+      "maintenance": "Medium-to-high custom UI work; direct ROS integration and no separate gateway.",
+      "evidence_urls": ["https://index.ros.org/p/rviz2/", "https://index.ros.org/p/rqt_gui/", "https://learn.microsoft.com/en-us/windows/wsl/tutorials/gui-apps"]
+    }
+  ],
+  "selection_rationale": "Prototype Foxglove Bridge plus its desktop client first: it has the broadest built-in coverage for synchronized images, 3D/map layers, plots, and service controls, reducing custom work for six views. This is a prototype choice, not a deployment approval. Compare the same topics and safety controls against native Qt in P9-02/03; if the required Developer seat is unavailable or the WSL resource/freshness gate fails, prefer the custom browser + BSD rosbridge path.",
+  "benchmarks_pending": ["render_age_p50_p95_ms", "camera_render_fps", "cpu_percent", "rss_mib", "gpu_vram_mib", "dropped_or_stale_frames", "e_stop_command_to_safe_stop_ms"],
+  "benchmark_policy": "Do not infer UI latency/resource performance from bridge documentation or the P5 inference benchmark. Record render age from source stamp and local receive/render monotonic timestamps; include loaded camera/depth/map/point cloud and six views."
+}

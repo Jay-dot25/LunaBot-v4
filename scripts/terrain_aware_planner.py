@@ -9,7 +9,6 @@ path-planning contract is independently validated.
 
 from __future__ import annotations
 
-import heapq
 import math
 from typing import Optional
 
@@ -24,6 +23,9 @@ from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from std_msgs.msg import String
 import tf2_ros
+from terrain_plan import (compute_map_revision, grid_to_world,
+                          merge_obstacle_grid, path_is_traversable,
+                          weighted_astar, world_to_grid)
 
 
 class TerrainAwarePlanner(Node):
@@ -32,6 +34,9 @@ class TerrainAwarePlanner(Node):
     def __init__(self) -> None:
         super().__init__("lunabot_terrain_aware_planner")
         self.declare_parameter("cost_map_topic", "/lunabot/terrain/cost_map")
+        self.declare_parameter("obstacle_map_topic", "/lunabot/obstacles/map")
+        self.declare_parameter("obstacle_threshold", 65)
+        self.declare_parameter("obstacle_inflation", 0.35)
         self.declare_parameter("goal_topic", "/goal_pose")
         self.declare_parameter("odom_topic", "/lunabot/odom")
         self.declare_parameter("plan_topic", "/lunabot/terrain/plan")
@@ -42,19 +47,29 @@ class TerrainAwarePlanner(Node):
         self.declare_parameter("blocked_cost", 100)
         self.declare_parameter("cost_weight", 2.0)
         self.declare_parameter("unknown_cost", 80)
+        self.declare_parameter("unknown_is_blocked", False)
         self.declare_parameter("replan_period", 1.0)
 
         get = self.get_parameter
         self.cost_map_topic = str(get("cost_map_topic").value)
+        self.obstacle_map_topic = str(get("obstacle_map_topic").value)
+        self.obstacle_threshold = max(1, min(100, int(get("obstacle_threshold").value)))
+        self.obstacle_inflation = max(0.0, float(get("obstacle_inflation").value))
+        if not math.isfinite(self.obstacle_inflation):
+            raise ValueError("obstacle_inflation must be finite")
         self.goal_topic = str(get("goal_topic").value)
         self.odom_topic = str(get("odom_topic").value)
         self.plan_topic = str(get("plan_topic").value)
         self.status_topic = str(get("status_topic").value)
         self.map_frame = str(get("map_frame").value)
         self.base_frame = str(get("base_frame").value)
-        self.blocked_cost = int(get("blocked_cost").value)
-        self.cost_weight = max(0.0, float(get("cost_weight").value))
-        self.unknown_cost = max(0, min(100, int(get("unknown_cost").value)))
+        self.blocked_cost = max(1, min(100, int(get("blocked_cost").value)))
+        self.cost_weight = float(get("cost_weight").value)
+        if not math.isfinite(self.cost_weight) or self.cost_weight < 0:
+            raise ValueError("cost_weight must be finite and nonnegative")
+        self.unknown_cost = max(0, min(self.blocked_cost - 1,
+                                       int(get("unknown_cost").value)))
+        self.unknown_is_blocked = bool(get("unknown_is_blocked").value)
         self.replan_period = max(0.2, float(get("replan_period").value))
 
         map_qos = QoSProfile(depth=1)
@@ -62,6 +77,9 @@ class TerrainAwarePlanner(Node):
         map_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         self.cost_sub = self.create_subscription(
             OccupancyGrid, self.cost_map_topic, self._cost_callback, map_qos)
+        self.obstacle_sub = self.create_subscription(
+            OccupancyGrid, self.obstacle_map_topic,
+            self._obstacle_callback, map_qos)
         self.goal_sub = self.create_subscription(
             PoseStamped, self.goal_topic, self._goal_callback, 10)
         self.odom_sub = self.create_subscription(
@@ -73,6 +91,12 @@ class TerrainAwarePlanner(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.cost_map: Optional[OccupancyGrid] = None
+        self.obstacle_map: Optional[OccupancyGrid] = None
+        self.planning_data: list[int] = []
+        self.cost_revision = ""
+        self.planned_revision = ""
+        self.last_plan_world: list[tuple[float, float]] = []
+        self.plan_requested = True
         self.goal: Optional[PoseStamped] = None
         self.odom: Optional[Odometry] = None
         # Simulation time starts at zero; subtracting a warm-up duration can
@@ -93,10 +117,93 @@ class TerrainAwarePlanner(Node):
         self.get_logger().info(text)
 
     def _cost_callback(self, msg: OccupancyGrid) -> None:
-        if msg.info.width <= 0 or msg.info.height <= 0 or not msg.data:
-            self.publish_status("TERRAIN_PLANNER_INVALID_COST_MAP")
+        if (msg.info.width <= 0 or msg.info.height <= 0
+                or len(msg.data) != int(msg.info.width) * int(msg.info.height)):
+            self._reject_cost_map("INVALID_COST_MAP")
+            return
+        if msg.header.frame_id != self.map_frame:
+            self._reject_cost_map("INVALID_COST_MAP_FRAME")
             return
         self.cost_map = msg
+        self._refresh_planning_grid()
+
+    def _obstacle_callback(self, msg: OccupancyGrid) -> None:
+        if (msg.header.frame_id != self.map_frame or msg.info.width <= 0
+                or msg.info.height <= 0
+                or len(msg.data) != int(msg.info.width) * int(msg.info.height)):
+            self.publish_status("TERRAIN_PLANNER_INVALID_OBSTACLE_MAP")
+            return
+        self.obstacle_map = msg
+        if self.cost_map is not None:
+            self._refresh_planning_grid()
+
+    def _refresh_planning_grid(self) -> None:
+        if self.cost_map is None:
+            return
+        msg = self.cost_map
+        try:
+            if self.obstacle_map is None:
+                planning_data = [int(value) for value in msg.data]
+            else:
+                obstacle = self.obstacle_map
+                base_origin = msg.info.origin
+                obstacle_origin = obstacle.info.origin
+                planning_data = merge_obstacle_grid(
+                    msg.data, int(msg.info.width), int(msg.info.height),
+                    origin_x=base_origin.position.x,
+                    origin_y=base_origin.position.y,
+                    origin_yaw=self._yaw(base_origin.orientation),
+                    resolution=float(msg.info.resolution),
+                    obstacles=obstacle.data,
+                    obstacle_width=int(obstacle.info.width),
+                    obstacle_height=int(obstacle.info.height),
+                    obstacle_origin_x=obstacle_origin.position.x,
+                    obstacle_origin_y=obstacle_origin.position.y,
+                    obstacle_origin_yaw=self._yaw(obstacle_origin.orientation),
+                    obstacle_resolution=float(obstacle.info.resolution),
+                    obstacle_threshold=self.obstacle_threshold,
+                    inflation_radius=self.obstacle_inflation)
+            origin = msg.info.origin
+            q = origin.orientation
+            revision = compute_map_revision(
+                frame_id=msg.header.frame_id, width=int(msg.info.width),
+                height=int(msg.info.height), resolution=float(msg.info.resolution),
+                origin=(origin.position.x, origin.position.y, origin.position.z,
+                        q.x, q.y, q.z, q.w), data=planning_data)
+        except (ValueError, TypeError, OverflowError):
+            self._reject_cost_map("INVALID_COST_MAP")
+            return
+        revision_changed = revision != self.cost_revision
+        self.planning_data = planning_data
+        if revision_changed:
+            path_clear = bool(self.last_plan_world) and self._existing_path_clear()
+            self.cost_revision = revision
+            self.plan_requested = True
+            if self.planned_revision and not path_clear:
+                self._invalidate_plan("MAP_REVISION_BLOCKED_PATH")
+            else:
+                self.publish_status(
+                    "TERRAIN_PLAN_REPLANNING reason=MAP_OR_OBSTACLE_CHANGED")
+
+    def _existing_path_clear(self) -> bool:
+        if self.cost_map is None or not self.last_plan_world:
+            return False
+        new_cells = [self._world_to_grid(x, y)
+                     for x, y in self.last_plan_world]
+        return path_is_traversable(
+            self.planning_data, int(self.cost_map.info.width),
+            int(self.cost_map.info.height), new_cells,
+            blocked_cost=self.blocked_cost,
+            unknown_is_blocked=self.unknown_is_blocked)
+
+    def _reject_cost_map(self, reason: str) -> None:
+        self.cost_map = None
+        self.cost_revision = ""
+        self.planning_data = []
+        self.plan_requested = False
+        self.last_plan_world = []
+        self._invalidate_plan(reason)
+        self.publish_status(f"TERRAIN_PLANNER_{reason}")
 
     @staticmethod
     def _same_goal(first: PoseStamped, second: PoseStamped) -> bool:
@@ -119,6 +226,9 @@ class TerrainAwarePlanner(Node):
         if self.goal is not None and self._same_goal(msg, self.goal):
             return
         self.goal = msg
+        self.plan_requested = True
+        self.last_plan_world = []
+        self._invalidate_plan("GOAL_CHANGED")
         self.publish_status(
             f"TERRAIN_GOAL_RECEIVED frame={msg.header.frame_id or self.map_frame}")
 
@@ -127,8 +237,12 @@ class TerrainAwarePlanner(Node):
 
     @staticmethod
     def _yaw(q) -> float:
-        return math.atan2(2.0 * (q.w * q.z),
-                          1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        norm = math.sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w)
+        if not math.isfinite(norm) or norm < 1e-12:
+            raise ValueError("map pose quaternion is invalid")
+        x, y, z, w = q.x/norm, q.y/norm, q.z/norm, q.w/norm
+        return math.atan2(2.0 * (w * z + x * y),
+                          1.0 - 2.0 * (y * y + z * z))
 
     def _transform_xy(self, x: float, y: float, yaw: float,
                       source: str, target: str):
@@ -156,20 +270,17 @@ class TerrainAwarePlanner(Node):
         info = self.cost_map.info
         origin = info.origin
         oyaw = self._yaw(origin.orientation)
-        dx, dy = x - origin.position.x, y - origin.position.y
-        c, s = math.cos(oyaw), math.sin(oyaw)
-        mx, my = c * dx + s * dy, -s * dx + c * dy
-        return int(math.floor(mx / info.resolution)), int(math.floor(my / info.resolution))
+        return world_to_grid(x, y, origin_x=origin.position.x,
+                             origin_y=origin.position.y, origin_yaw=oyaw,
+                             resolution=info.resolution)
 
     def _grid_to_world(self, cell):
         info = self.cost_map.info
         origin = info.origin
         oyaw = self._yaw(origin.orientation)
-        mx = (cell[0] + 0.5) * info.resolution
-        my = (cell[1] + 0.5) * info.resolution
-        c, s = math.cos(oyaw), math.sin(oyaw)
-        return (origin.position.x + c * mx - s * my,
-                origin.position.y + s * mx + c * my)
+        return grid_to_world(cell, origin_x=origin.position.x,
+                             origin_y=origin.position.y, origin_yaw=oyaw,
+                             resolution=info.resolution)
 
     def _cell_cost(self, cell) -> Optional[int]:
         info = self.cost_map.info
@@ -179,53 +290,31 @@ class TerrainAwarePlanner(Node):
         index = y * info.width + x
         if index >= len(self.cost_map.data):
             return None
-        value = int(self.cost_map.data[index])
+        value = int(self.planning_data[index])
         if value < 0:
+            if self.unknown_is_blocked:
+                return None
             value = self.unknown_cost
         if value >= self.blocked_cost:
             return None
         return max(0, min(100, value))
 
-    def _nearest_traversable(self, cell):
-        if self._cell_cost(cell) is not None:
-            return cell
-        for radius in range(1, 20):
-            for dy in range(-radius, radius + 1):
-                for dx in range(-radius, radius + 1):
-                    candidate = (cell[0] + dx, cell[1] + dy)
-                    if self._cell_cost(candidate) is not None:
-                        return candidate
-        return None
-
     def _weighted_astar(self, start, goal):
-        neighbors = ((1, 0), (-1, 0), (0, 1), (0, -1),
-                     (1, 1), (1, -1), (-1, 1), (-1, -1))
-        open_set = [(0.0, start)]
-        came_from = {}
-        scores = {start: 0.0}
-        while open_set:
-            _, current = heapq.heappop(open_set)
-            if current == goal:
-                path = [current]
-                while current in came_from:
-                    current = came_from[current]
-                    path.append(current)
-                return list(reversed(path)), scores[goal]
-            for dx, dy in neighbors:
-                nxt = (current[0] + dx, current[1] + dy)
-                cell_cost = self._cell_cost(nxt)
-                if cell_cost is None:
-                    continue
-                distance = math.sqrt(2.0) if dx and dy else 1.0
-                step = distance * (1.0 + self.cost_weight * cell_cost / 100.0)
-                tentative = scores[current] + step
-                if tentative >= scores.get(nxt, float("inf")):
-                    continue
-                came_from[nxt] = current
-                scores[nxt] = tentative
-                heuristic = math.hypot(goal[0] - nxt[0], goal[1] - nxt[1])
-                heapq.heappush(open_set, (tentative + heuristic, nxt))
-        return [], float("inf")
+        info = self.cost_map.info
+        return weighted_astar(
+            self.planning_data, int(info.width), int(info.height), start, goal,
+            cost_weight=self.cost_weight, blocked_cost=self.blocked_cost,
+            unknown_cost=self.unknown_cost, unknown_is_blocked=self.unknown_is_blocked)
+
+    def _invalidate_plan(self, reason: str, *, reset_revision: bool = True) -> None:
+        self.last_plan_world = []
+        path = Path()
+        path.header.frame_id = self.map_frame
+        path.header.stamp = self.get_clock().now().to_msg()
+        self.plan_pub.publish(path)
+        if reset_revision:
+            self.planned_revision = ""
+        self.publish_status(f"TERRAIN_PLAN_INVALIDATED reason={reason}")
 
     def _plan(self) -> None:
         if self.cost_map is None or self.goal is None:
@@ -237,18 +326,39 @@ class TerrainAwarePlanner(Node):
             goal_x, goal_y, goal_yaw = self._transform_xy(
                 goal_pose.position.x, goal_pose.position.y, goal_yaw,
                 self.goal.header.frame_id or self.map_frame, self.map_frame)
-        except (RuntimeError, tf2_ros.TransformException) as exc:
+        except (RuntimeError, ValueError, tf2_ros.TransformException) as exc:
             self.publish_status(f"TERRAIN_PLANNER_WAITING_FOR_TF {exc}")
             return
-        start_cell = self._nearest_traversable(
-            self._world_to_grid(current_x, current_y))
-        goal_cell = self._nearest_traversable(
-            self._world_to_grid(goal_x, goal_y))
-        if start_cell is None or goal_cell is None:
-            self.publish_status("TERRAIN_PLANNER_NO_SAFE_START_OR_GOAL")
+        try:
+            start_cell = self._world_to_grid(current_x, current_y)
+            goal_cell = self._world_to_grid(goal_x, goal_y)
+        except (TypeError, ValueError, ZeroDivisionError) as exc:
+            self._invalidate_plan("INVALID_POSE_OR_GEOMETRY", reset_revision=False)
+            self.publish_status(f"TERRAIN_PLANNER_INVALID_POSE_OR_GEOMETRY {exc}")
+            return
+        start_cost = self._cell_cost(start_cell)
+        goal_cost = self._cell_cost(goal_cell)
+        if start_cost is None or goal_cost is None:
+            start_raw = (self.planning_data[start_cell[1] * int(self.cost_map.info.width)
+                                           + start_cell[0]]
+                         if 0 <= start_cell[0] < int(self.cost_map.info.width)
+                         and 0 <= start_cell[1] < int(self.cost_map.info.height)
+                         else "OUT_OF_BOUNDS")
+            goal_raw = (self.planning_data[goal_cell[1] * int(self.cost_map.info.width)
+                                          + goal_cell[0]]
+                        if 0 <= goal_cell[0] < int(self.cost_map.info.width)
+                        and 0 <= goal_cell[1] < int(self.cost_map.info.height)
+                        else "OUT_OF_BOUNDS")
+            self._invalidate_plan("OCCUPANCY_CONSTRAINT", reset_revision=False)
+            self.publish_status(
+                f"TERRAIN_PLANNER_OCCUPANCY_CONSTRAINT start={start_cell} goal={goal_cell} "
+                f"start_cost={start_cost if start_cost is not None else start_raw} "
+                f"goal_cost={goal_cost if goal_cost is not None else goal_raw} "
+                f"revision={self.cost_revision[:12]}")
             return
         cells, total_cost = self._weighted_astar(start_cell, goal_cell)
         if not cells:
+            self._invalidate_plan("NO_PATH", reset_revision=False)
             self.publish_status("TERRAIN_PLANNER_NO_PATH")
             return
         path = Path()
@@ -269,14 +379,24 @@ class TerrainAwarePlanner(Node):
             pose.pose.orientation.w = math.cos(heading / 2.0)
             path.poses.append(pose)
         self.plan_pub.publish(path)
+        self.last_plan_world = [self._grid_to_world(cell) for cell in cells]
         self.last_plan_time = self.get_clock().now()
+        self.planned_revision = self.cost_revision
+        self.plan_requested = False
         self.publish_status(
             f"TERRAIN_PLAN_PASS cells={len(cells)} weighted_cost={total_cost:.2f} "
-            f"frame={self.map_frame} cost_weight={self.cost_weight:.2f}")
+            f"frame={self.map_frame} cost_weight={self.cost_weight:.2f} "
+            f"map_revision={self.cost_revision}")
 
     def _tick(self) -> None:
-        if (self.get_clock().now() - self.last_plan_time).nanoseconds < int(self.replan_period * 1e9):
+        revision_changed = self.cost_revision != self.planned_revision
+        if (not self.plan_requested and not revision_changed
+                and (self.get_clock().now() - self.last_plan_time).nanoseconds
+                < int(self.replan_period * 1e9)):
             return
+        self.last_plan_time = self.get_clock().now()
+        self.planned_revision = self.cost_revision
+        self.plan_requested = False
         self._plan()
 
 
@@ -287,6 +407,9 @@ def main(args=None) -> None:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except Exception:
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
         if rclpy.ok():

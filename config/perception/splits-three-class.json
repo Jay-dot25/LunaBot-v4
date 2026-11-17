@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "split_unit": "source_id + terrain_id (entire acquisition scene)",
+  "random_seed": 20261104,
+  "scene_splits": [
+    {
+      "source_id": "polar-sim-labels",
+      "group_key": "terrain_id",
+      "train": [
+        "terrain01",
+        "terrain02",
+        "terrain03",
+        "terrain04",
+        "terrain05",
+        "terrain06",
+        "terrain07",
+        "terrain08"
+      ],
+      "validation": [
+        "terrain09",
+        "terrain11"
+      ],
+      "test": [
+        "terrain10",
+        "terrain12"
+      ],
+      "policy": "All camera positions, illumination, exposure variants, stereo views, masks, and derived crops from a terrain_id inherit its single split.",
+      "group_namespace": "nasa-polar-terrain"
+    },
+    {
+      "source_id": "baseprod-bedrock-evaluation",
+      "group_namespace": "baseprod-bardenas-site",
+      "group_key": "terrain_id",
+      "train": [],
+      "validation": [],
+      "test": [
+        "bardenas-2023"
+      ],
+      "policy": "All sampled Bardenas acquisition views stay in test; no train or validation use."
+    },
+    {
+      "source_id": "apollo15-bedrock-evaluation",
+      "group_namespace": "apollo15-hadley-rille",
+      "group_key": "terrain_id",
+      "train": [],
+      "validation": [
+        "hadley-rille-9a"
+      ],
+      "test": [],
+      "policy": "Both related Hadley Rille frames stay in validation; no train or test use."
+    }
+  ],
+  "train_only_sources": [
+    "marsseg-msl-bedrock-pretrain",
+    "nasa-polar-traverse-crater-train",
+    "roboflow-combined-polygons",
+    "lunarseg-obstacles",
+    "ai4mars-nav-training"
+  ],
+  "excluded_from_all_splits": [
+    "terrain13"
+  ],
+  "excluded_reason": "NASA identifies Terrain 13 as extra, as-is, and not well calibrated.",
+  "materialization_state": "external_polar_and_mars_materialized; bounded evaluation additions hash recorded",
+  "class_coverage_note": "Crater candidates occur in Terrain 05 and mapped crater scenes 11 and 12; label support in each split must be confirmed from reviewed masks, never inferred from the terrain name.",
+  "evaluation_only_sources": [
+    "baseprod-bedrock-evaluation",
+    "apollo15-bedrock-evaluation"
+  ]
+}

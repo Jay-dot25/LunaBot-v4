@@ -16,12 +16,11 @@ planner/controller path.
 
 from __future__ import annotations
 
-import math
-import struct
+from collections import deque
 from typing import Optional
 
+import numpy as np
 import rclpy
-from geometry_msgs.msg import Quaternion
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
@@ -29,9 +28,13 @@ from rclpy.node import Node
 from rclpy.time import Time
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 import tf2_ros
+from semantic_projection import (
+    CameraIntrinsics, RigidTransform, decode_depth_buffer, project_synced_frame)
+from semantic_layers import SemanticGrid, three_class_to_map_labels
+from terrain_geometry import derive_terrain_layers
 
 
 UNKNOWN = 0
@@ -46,9 +49,25 @@ class SemanticTerrainMapper(Node):
         super().__init__("lunabot_semantic_terrain_mapper")
         self.declare_parameter("mask_topic", "/lunabot/terrain/segmentation")
         self.declare_parameter("depth_topic", "/lunabot/depth/image_raw")
+        self.declare_parameter("rgb_info_topic", "/lunabot/camera/camera_info")
+        self.declare_parameter("depth_info_topic", "/lunabot/depth/camera_info")
         self.declare_parameter("map_topic", "/lunabot/terrain/semantic_map")
         self.declare_parameter(
             "status_topic", "/lunabot/terrain/semantic_map/status")
+        self.declare_parameter(
+            "confidence_topic", "/lunabot/terrain/segmentation_confidence")
+        self.declare_parameter(
+            "confidence_map_topic", "/lunabot/terrain/semantic_map/confidence")
+        self.declare_parameter(
+            "age_map_topic", "/lunabot/terrain/semantic_map/age")
+        self.declare_parameter(
+            "slope_map_topic", "/lunabot/terrain/semantic_map/slope")
+        self.declare_parameter(
+            "roughness_map_topic", "/lunabot/terrain/semantic_map/roughness")
+        self.declare_parameter(
+            "crater_risk_map_topic", "/lunabot/terrain/semantic_map/crater_risk")
+        self.declare_parameter(
+            "uncertainty_map_topic", "/lunabot/terrain/semantic_map/uncertainty")
         self.declare_parameter("map_frame", "map")
         self.declare_parameter("base_frame", "chassis")
         self.declare_parameter("resolution", 0.10)
@@ -56,16 +75,30 @@ class SemanticTerrainMapper(Node):
         self.declare_parameter("height", 160)
         self.declare_parameter("origin_x", -8.0)
         self.declare_parameter("origin_y", -8.0)
-        self.declare_parameter("horizontal_fov", 1.047)
+        self.declare_parameter("recenter_window", True)
         self.declare_parameter("max_depth", 8.0)
         self.declare_parameter("sample_stride", 8)
+        self.declare_parameter("max_sync_skew_s", 0.075)
+        self.declare_parameter("max_input_age_s", 0.5)
+        self.declare_parameter("confidence_min", 0.35)
+        self.declare_parameter("confidence_half_life_s", 10.0)
+        self.declare_parameter("observation_ttl_s", 30.0)
         self.declare_parameter("update_rate", 2.0)
 
         get = self.get_parameter
         self.mask_topic = str(get("mask_topic").value)
         self.depth_topic = str(get("depth_topic").value)
+        self.rgb_info_topic = str(get("rgb_info_topic").value)
+        self.depth_info_topic = str(get("depth_info_topic").value)
         self.map_topic = str(get("map_topic").value)
         self.status_topic = str(get("status_topic").value)
+        self.confidence_topic = str(get("confidence_topic").value)
+        self.confidence_map_topic = str(get("confidence_map_topic").value)
+        self.age_map_topic = str(get("age_map_topic").value)
+        self.slope_map_topic = str(get("slope_map_topic").value)
+        self.roughness_map_topic = str(get("roughness_map_topic").value)
+        self.crater_risk_map_topic = str(get("crater_risk_map_topic").value)
+        self.uncertainty_map_topic = str(get("uncertainty_map_topic").value)
         self.map_frame = str(get("map_frame").value)
         self.base_frame = str(get("base_frame").value)
         self.resolution = max(0.02, float(get("resolution").value))
@@ -73,19 +106,44 @@ class SemanticTerrainMapper(Node):
         self.height = max(10, int(get("height").value))
         self.origin_x = float(get("origin_x").value)
         self.origin_y = float(get("origin_y").value)
-        self.horizontal_fov = max(0.2, float(get("horizontal_fov").value))
+        self.recenter_window = bool(get("recenter_window").value)
         self.max_depth = max(0.5, float(get("max_depth").value))
         self.sample_stride = max(1, int(get("sample_stride").value))
+        self.max_sync_skew_ns = int(max(0.001, float(get("max_sync_skew_s").value)) * 1e9)
+        self.max_input_age_ns = int(max(0.05, float(get("max_input_age_s").value)) * 1e9)
+        self.confidence_min = min(1.0, max(0.0, float(get("confidence_min").value)))
+        self.confidence_half_life_s = max(
+            0.1, float(get("confidence_half_life_s").value))
+        self.observation_ttl_s = max(0.2, float(get("observation_ttl_s").value))
         self.update_rate = max(0.2, float(get("update_rate").value))
 
         self.mask_sub = self.create_subscription(
             Image, self.mask_topic, self._mask_callback, qos_profile_sensor_data)
+        self.confidence_sub = self.create_subscription(
+            Image, self.confidence_topic, self._confidence_callback,
+            qos_profile_sensor_data)
         self.depth_sub = self.create_subscription(
             Image, self.depth_topic, self._depth_callback, qos_profile_sensor_data)
+        self.rgb_info_sub = self.create_subscription(
+            CameraInfo, self.rgb_info_topic, self._rgb_info_callback, qos_profile_sensor_data)
+        self.depth_info_sub = self.create_subscription(
+            CameraInfo, self.depth_info_topic, self._depth_info_callback, qos_profile_sensor_data)
         map_qos = QoSProfile(depth=1)
         map_qos.reliability = ReliabilityPolicy.RELIABLE
         map_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         self.map_pub = self.create_publisher(OccupancyGrid, self.map_topic, map_qos)
+        self.confidence_map_pub = self.create_publisher(
+            OccupancyGrid, self.confidence_map_topic, map_qos)
+        self.age_map_pub = self.create_publisher(OccupancyGrid, self.age_map_topic, map_qos)
+        self.geometry_pubs = {
+            "slope": self.create_publisher(OccupancyGrid, self.slope_map_topic, map_qos),
+            "roughness": self.create_publisher(
+                OccupancyGrid, self.roughness_map_topic, map_qos),
+            "crater_risk": self.create_publisher(
+                OccupancyGrid, self.crater_risk_map_topic, map_qos),
+            "uncertainty": self.create_publisher(
+                OccupancyGrid, self.uncertainty_map_topic, map_qos),
+        }
         status_qos = QoSProfile(depth=1)
         status_qos.reliability = ReliabilityPolicy.RELIABLE
         status_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
@@ -95,13 +153,25 @@ class SemanticTerrainMapper(Node):
         self.tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=30.0))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         self.latest_mask: Optional[Image] = None
+        self.latest_confidence: Optional[Image] = None
         self.latest_depth: Optional[Image] = None
+        # Segmentation inference is slower than the camera stream. Keep a
+        # short depth history so a delayed mask can use the depth frame closest
+        # to its capture stamp instead of whichever depth frame arrived last.
+        self.depth_history: deque[Image] = deque(maxlen=30)
+        self.latest_rgb_info: Optional[CameraInfo] = None
+        self.latest_depth_info: Optional[CameraInfo] = None
         self.last_mask_stamp = 0
         self.last_process_ns = 0
         self.frame_count = 0
         self.observation_count = 0
         self.last_status = ""
-        self.cells = [UNKNOWN] * (self.width * self.height)
+        self.grid = SemanticGrid(
+            self.width, self.height, self.resolution, self.origin_x, self.origin_y,
+            half_life_s=self.confidence_half_life_s,
+            ttl_s=self.observation_ttl_s, min_confidence=self.confidence_min)
+        self.last_clear_count = 0
+        self.last_recenter_discarded = 0
         self.timer = self.create_timer(1.0 / self.update_rate, self._process_latest)
         self.publish_status("SEMANTIC_MAP_WAITING_FOR_SEGMENTATION")
 
@@ -112,8 +182,18 @@ class SemanticTerrainMapper(Node):
     def _mask_callback(self, msg: Image) -> None:
         self.latest_mask = msg
 
+    def _confidence_callback(self, msg: Image) -> None:
+        self.latest_confidence = msg
+
     def _depth_callback(self, msg: Image) -> None:
         self.latest_depth = msg
+        self.depth_history.append(msg)
+
+    def _rgb_info_callback(self, msg: CameraInfo) -> None:
+        self.latest_rgb_info = msg
+
+    def _depth_info_callback(self, msg: CameraInfo) -> None:
+        self.latest_depth_info = msg
 
     def publish_status(self, text: str) -> None:
         if text == self.last_status:
@@ -125,121 +205,207 @@ class SemanticTerrainMapper(Node):
         self.get_logger().info(text)
 
     @staticmethod
-    def _yaw_from_quaternion(q: Quaternion) -> float:
-        return math.atan2(2.0 * (q.w * q.z + q.x * q.y),
-                          1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+    def _mask_array(msg: Image) -> np.ndarray:
+        if (msg.encoding or "").lower() not in ("mono8", "8uc1"):
+            raise ValueError(f"semantic mask must be mono8, got {msg.encoding}")
+        if msg.width <= 0 or msg.height <= 0 or msg.step < msg.width or len(msg.data) < msg.step * msg.height:
+            raise ValueError("semantic mask buffer dimensions are invalid")
+        rows = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.step)
+        return rows[:, :msg.width].copy()
 
     @staticmethod
-    def _depth_at(msg: Image, x: int, y: int) -> float:
-        encoding = (msg.encoding or "").lower().replace(" ", "")
-        offset = y * msg.step
-        try:
-            if encoding in ("16uc1", "mono16"):
-                raw = struct.unpack_from(
-                    ">H" if msg.is_bigendian else "<H", msg.data, offset + x * 2)[0]
-                return raw / 1000.0
-            if encoding in ("32fc1", "32fc"):
-                return float(struct.unpack_from(
-                    ">f" if msg.is_bigendian else "<f", msg.data, offset + x * 4)[0])
-            if encoding in ("64fc1", "64fc"):
-                return float(struct.unpack_from(
-                    ">d" if msg.is_bigendian else "<d", msg.data, offset + x * 8)[0])
-        except (IndexError, struct.error):
-            return math.nan
-        return math.nan
+    def _depth_array(msg: Image) -> np.ndarray:
+        return decode_depth_buffer(msg.data, msg.width, msg.height, msg.step,
+                                   msg.encoding, bool(msg.is_bigendian))
 
     @staticmethod
-    def _mask_at(msg: Image, x: int, y: int) -> int:
-        if msg.width <= 0 or msg.height <= 0 or msg.step <= 0:
-            return UNKNOWN
-        offset = y * msg.step + x
-        if offset >= len(msg.data):
-            return UNKNOWN
-        value = int(msg.data[offset])
-        return value if value in (TERRAIN, OBSTACLE) else UNKNOWN
+    def _intrinsics(info: CameraInfo, width: int, height: int) -> CameraIntrinsics:
+        if info.width != width or info.height != height:
+            raise ValueError("CameraInfo dimensions do not match the image")
+        if any(abs(float(value)) > 1e-9 for value in info.d):
+            raise ValueError("distorted CameraInfo is unsupported; simulated cameras must be rectified")
+        return CameraIntrinsics.from_k(width, height, info.k)
 
-    def _lookup_robot_pose(self):
+    @staticmethod
+    def _rigid_transform(message) -> RigidTransform:
+        transform = message.transform
+        translation, rotation = transform.translation, transform.rotation
+        return RigidTransform((translation.x, translation.y, translation.z),
+                              (rotation.x, rotation.y, rotation.z, rotation.w))
+
+    def _lookup_transform_at(self, target: str, source: str, stamp_ns: int):
         try:
-            transform = self.tf_buffer.lookup_transform(
-                self.map_frame, self.base_frame, Time())
+            stamp = Time(nanoseconds=stamp_ns, clock_type=self.get_clock().clock_type)
+            return self.tf_buffer.lookup_transform(target, source, stamp)
         except tf2_ros.TransformException as exc:
             self.publish_status(f"SEMANTIC_MAP_WAITING_FOR_TF {exc}")
             return None
-        translation = transform.transform.translation
-        yaw = self._yaw_from_quaternion(transform.transform.rotation)
-        return translation.x, translation.y, yaw
 
-    def _grid_index(self, x: float, y: float) -> Optional[int]:
-        gx = int(math.floor((x - self.origin_x) / self.resolution))
-        gy = int(math.floor((y - self.origin_y) / self.resolution))
-        if gx < 0 or gy < 0 or gx >= self.width or gy >= self.height:
+    def _lookup_transform_across_stamps(self, target: str, target_stamp_ns: int,
+                                        source: str, source_stamp_ns: int,
+                                        fixed_frame: str):
+        try:
+            clock_type = self.get_clock().clock_type
+            target_time = Time(nanoseconds=target_stamp_ns, clock_type=clock_type)
+            source_time = Time(nanoseconds=source_stamp_ns, clock_type=clock_type)
+            return self.tf_buffer.lookup_transform_full(
+                target, target_time, source, source_time, fixed_frame)
+        except tf2_ros.TransformException as exc:
+            self.publish_status(f"SEMANTIC_MAP_WAITING_FOR_TF {exc}")
             return None
-        return gy * self.width + gx
 
     def _publish_map(self) -> None:
+        now_ns = self.get_clock().now().nanoseconds
+        stamp = self.get_clock().now().to_msg()
+        layers = {
+            "semantic": self.grid.semantic_data(now_ns),
+            "confidence": self.grid.confidence_data(now_ns),
+            "age": self.grid.age_data(now_ns),
+        }
+        geometry = derive_terrain_layers(
+            self.grid.elevation, self.grid.elevation_seen_ns,
+            self.grid.labels, self.grid.confidence, self.grid.last_seen_ns,
+            now_ns=now_ns, resolution=self.resolution,
+            confidence_half_life_s=self.confidence_half_life_s,
+            observation_ttl_s=self.observation_ttl_s)
+        publishers = {
+            "semantic": self.map_pub,
+            "confidence": self.confidence_map_pub,
+            "age": self.age_map_pub,
+            **self.geometry_pubs,
+        }
+        for name, data in layers.items():
+            self._publish_layer(publishers[name], data, stamp)
+        for name, layer in geometry.items():
+            self._publish_layer(publishers[name], layer.ravel().tolist(), stamp)
+
+    def _publish_layer(self, publisher, data: list[int], stamp) -> None:
         msg = OccupancyGrid()
         msg.header.frame_id = self.map_frame
-        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.stamp = stamp
         msg.info.resolution = self.resolution
         msg.info.width = self.width
         msg.info.height = self.height
-        msg.info.origin.position.x = self.origin_x
-        msg.info.origin.position.y = self.origin_y
+        msg.info.origin.position.x = self.grid.origin_x
+        msg.info.origin.position.y = self.grid.origin_y
         msg.info.origin.orientation.w = 1.0
-        # OccupancyGrid is used as a compact semantic grid: 25 is terrain,
-        # 100 is obstacle, and -1 is not yet observed.
-        msg.data = [-1 if value == UNKNOWN else 25 if value == TERRAIN else 100
-                    for value in self.cells]
-        self.map_pub.publish(msg)
+        msg.data = data
+        publisher.publish(msg)
 
     def _process_latest(self) -> None:
+        now_ns = self.get_clock().now().nanoseconds
+        self.last_clear_count = self.grid.decay(now_ns)
+        if self.last_clear_count or np.any(self.grid.labels):
+            self._publish_map()
         mask = self.latest_mask
+        confidence_msg = self.latest_confidence
         depth = self.latest_depth
-        if mask is None or depth is None or mask.width <= 0 or mask.height <= 0:
+        rgb_info = self.latest_rgb_info
+        depth_info = self.latest_depth_info
+        if (mask is None or confidence_msg is None or depth is None
+                or rgb_info is None or depth_info is None
+                or mask.width <= 0 or mask.height <= 0):
             return
-        stamp_ns = self._stamp_ns(mask)
-        if stamp_ns <= self.last_mask_stamp:
+        mask_stamp_ns = self._stamp_ns(mask)
+        if self.depth_history:
+            depth = min(self.depth_history,
+                        key=lambda frame: abs(mask_stamp_ns - self._stamp_ns(frame)))
+        depth_stamp_ns = self._stamp_ns(depth)
+        if mask_stamp_ns <= self.last_mask_stamp:
             return
-        pose = self._lookup_robot_pose()
-        if pose is None:
+        skew_ns = abs(mask_stamp_ns - depth_stamp_ns)
+        if skew_ns > self.max_sync_skew_ns:
+            self.publish_status(
+                f"SEMANTIC_MAP_WAITING_FOR_SYNC skew_ms={skew_ns / 1e6:.1f} "
+                f"limit_ms={self.max_sync_skew_ns / 1e6:.1f}")
             return
-        self.last_mask_stamp = stamp_ns
-        robot_x, robot_y, robot_yaw = pose
-        fx = mask.width / (2.0 * math.tan(self.horizontal_fov / 2.0))
-        cx = (mask.width - 1) / 2.0
-        samples = 0
-        for y in range(0, mask.height, self.sample_stride):
-            depth_y = min(depth.height - 1, int(y * depth.height / mask.height))
-            for x in range(0, mask.width, self.sample_stride):
-                label = self._mask_at(mask, x, y)
-                if label == UNKNOWN:
-                    continue
-                depth_x = min(depth.width - 1, int(x * depth.width / mask.width))
-                distance = self._depth_at(depth, depth_x, depth_y)
-                if not math.isfinite(distance) or distance < 0.1 or distance > self.max_depth:
-                    continue
-                bearing = math.atan2((x - cx), fx)
-                local_x = distance * math.cos(bearing)
-                local_y = distance * math.sin(bearing)
-                map_x = robot_x + math.cos(robot_yaw) * local_x - math.sin(robot_yaw) * local_y
-                map_y = robot_y + math.sin(robot_yaw) * local_x + math.cos(robot_yaw) * local_y
-                index = self._grid_index(map_x, map_y)
-                if index is None:
-                    continue
-                # Obstacle evidence dominates terrain evidence in a cell.
-                if label == OBSTACLE or self.cells[index] == UNKNOWN:
-                    self.cells[index] = label
-                samples += 1
+        confidence_stamp_ns = self._stamp_ns(confidence_msg)
+        if (abs(mask_stamp_ns - confidence_stamp_ns) > self.max_sync_skew_ns
+                or confidence_msg.header.frame_id != mask.header.frame_id
+                or confidence_msg.width != mask.width
+                or confidence_msg.height != mask.height):
+            self.publish_status("SEMANTIC_MAP_WAITING_FOR_CONFIDENCE_SYNC")
+            return
+        age_ns = now_ns - max(mask_stamp_ns, depth_stamp_ns)
+        if age_ns < -self.max_sync_skew_ns:
+            self.publish_status(f"SEMANTIC_MAP_WAITING_FOR_FRESH_INPUT future_ms={-age_ns / 1e6:.1f}")
+            return
+        if age_ns > self.max_input_age_ns:
+            self.publish_status(
+                f"SEMANTIC_MAP_WAITING_FOR_FRESH_INPUT age_ms={age_ns / 1e6:.1f} "
+                f"limit_ms={self.max_input_age_ns / 1e6:.1f}")
+            return
 
+        rgb_frame = rgb_info.header.frame_id or mask.header.frame_id
+        depth_frame = depth_info.header.frame_id or depth.header.frame_id
+        if (not rgb_frame or not depth_frame or mask.header.frame_id != rgb_frame
+                or depth.header.frame_id != depth_frame):
+            self.publish_status("SEMANTIC_MAP_WAITING_FOR_CALIBRATION frame_id_mismatch")
+            return
+        map_from_depth_msg = self._lookup_transform_at(
+            self.map_frame, depth_frame, depth_stamp_ns)
+        rgb_from_depth_msg = self._lookup_transform_across_stamps(
+            rgb_frame, mask_stamp_ns, depth_frame, depth_stamp_ns, self.map_frame)
+        if map_from_depth_msg is None or rgb_from_depth_msg is None:
+            return
+
+        camera_pose = map_from_depth_msg.transform.translation
+        self.last_recenter_discarded = (
+            self.grid.recenter(camera_pose.x, camera_pose.y)
+            if self.recenter_window else 0)
+        self.origin_x, self.origin_y = self.grid.origin_x, self.grid.origin_y
+
+        try:
+            semantic_mask = three_class_to_map_labels(self._mask_array(mask))
+            confidence = self._mask_array(confidence_msg).astype(np.float32) / 255.0
+            depth_m = self._depth_array(depth)
+            rgb_model = self._intrinsics(rgb_info, mask.width, mask.height)
+            depth_model = self._intrinsics(depth_info, depth.width, depth.height)
+            projected = project_synced_frame(
+                semantic_mask, depth_m, depth_model, rgb_model,
+                self._rigid_transform(rgb_from_depth_msg),
+                self._rigid_transform(map_from_depth_msg),
+                mask_stamp_ns=mask_stamp_ns, depth_stamp_ns=depth_stamp_ns,
+                max_sync_skew_ns=self.max_sync_skew_ns,
+                resolution=self.resolution, origin_x=self.origin_x,
+                origin_y=self.origin_y, grid_width=self.width,
+                grid_height=self.height, sample_stride=self.sample_stride,
+                min_depth=0.1, max_depth=self.max_depth,
+                confidence_image=confidence)
+        except (ValueError, TypeError) as exc:
+            self.publish_status(f"SEMANTIC_MAP_INVALID_CALIBRATION {exc}")
+            return
+        if projected.status in ("WAITING_FOR_SYNC", "WAITING_FOR_TF"):
+            self.publish_status(f"SEMANTIC_MAP_{projected.status} ")
+            return
+
+        # Mark the synchronized pair consumed only after TF and calibration pass.
+        self.last_mask_stamp = mask_stamp_ns
+        confidences = projected.observation_confidence or {}
+        observations = {
+            index: (label, confidences.get(index, 0.0))
+            for index, label in projected.observations.items()
+        }
+        elevations = projected.observation_elevation or {}
+        update = self.grid.update(observations, now_ns, elevations=elevations)
+        samples = len(projected.observations)
         self.frame_count += 1
         self.observation_count += samples
-        terrain_cells = sum(value == TERRAIN for value in self.cells)
-        obstacle_cells = sum(value == OBSTACLE for value in self.cells)
+        terrain_cells, obstacle_cells, _ = self.grid.counts(now_ns)
         self._publish_map()
         self.publish_status(
             f"SEMANTIC_MAP_PASS frames={self.frame_count} "
             f"observations={self.observation_count} samples={samples} "
+            f"accepted={update.accepted} low_confidence={update.rejected_low_confidence} "
+            f"cleared={update.cleared_stale + self.last_clear_count} "
+            f"recenter_discarded={self.last_recenter_discarded} "
+            f"valid_depth={projected.valid_depth_pixels} "
+            f"occluded={projected.occluded_pixels} "
+            f"out_of_grid={projected.out_of_grid_pixels} "
             f"terrain_cells={terrain_cells} obstacle_cells={obstacle_cells} "
+            f"grid={self.width}x{self.height} memory_bytes={self.grid.memory_bytes} "
+            f"coverage_m={self.width * self.resolution:.1f}x{self.height * self.resolution:.1f} "
+            f"origin={self.grid.origin_x:.2f},{self.grid.origin_y:.2f} "
             f"resolution={self.resolution:.2f} frame={self.map_frame}")
 
 
@@ -250,9 +416,13 @@ def main(args=None) -> None:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except Exception:
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

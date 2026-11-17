@@ -173,15 +173,17 @@ def main():
     rclpy.init(args=ros_args)
     node = OdometryMonitor(args.evidence_dir)
 
+    stop_requested = False
     def stop(_signum, _frame):
-        node.write_report()
-        if rclpy.ok():
-            rclpy.shutdown()
+        nonlocal stop_requested
+        # Signal handlers only set a flag; ROS teardown occurs in normal flow.
+        stop_requested = True
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     try:
-        rclpy.spin(node)
+        while rclpy.ok() and not stop_requested:
+            rclpy.spin_once(node, timeout_sec=0.1)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from static_contracts import shared_shutdown
 """Static Phase B gate: Control & Odometry.
 
 This validator never claims Gazebo runtime success. It checks that the
@@ -106,7 +107,7 @@ check('monitor checks continuity', 'max_step' in monitor and 'self.max_step < 0.
 
 # Teleop remains Phase A compatible and supports B input topic.
 teleop = text(ROOT / 'scripts/wasd_teleop.py')
-check('teleop default preserves Phase A /cmd_vel', "topic='/cmd_vel'" in teleop)
+check('teleop defaults to the safety input /cmd_vel_in', "topic='/cmd_vel_in'" in teleop)
 check('teleop supports --topic override', 'ap.add_argument("--topic"' in teleop)
 check('teleop publishes selected topic', 'create_publisher(Twist, topic' in teleop)
 check('teleop demo supports sim time', 'Clock' in teleop and 'node.sim_t' in teleop)
@@ -152,8 +153,8 @@ check('launch-b records IMU diagnostics on failure',
       'imu_topic_info.txt' in launch and
       'imu_diagnostics.txt' in launch)
 check('launch-b has clean shutdown',
-      'kill -TERM "$CONTROL_PID"' in launch and
-      'kill -TERM "$ODOM_PID"' in launch and 'shutdown()' in launch)
+      'stop_group "$CONTROL_PID"' in launch and
+      'stop_group "$ODOM_PID"' in launch and shared_shutdown(launch) and 'shutdown()' in launch)
 check('launch-b has demo nonzero exit propagation',
       'shutdown "$EXIT_CODE"' in launch and 'demo_rc' in launch)
 
@@ -188,8 +189,8 @@ check('collector launches Phase B directly',
 
 # Baseline static validator remains present; run it when dependencies are available.
 r = run([sys.executable, 'tools/validate_phase_a.py'])
-check('Phase A static baseline remains 80/80',
-      r.returncode == 0 and '80/80' in r.stdout,
+check('Phase A static baseline remains 96/96',
+      r.returncode == 0 and '96/96' in r.stdout,
       r.stdout[-200:].strip())
 
 passed = sum(ok for _, ok, _ in checks)

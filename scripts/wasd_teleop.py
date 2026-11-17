@@ -53,7 +53,7 @@ def yaw_from_quaternion(q):
 
 
 class TeleopNode(Node):
-    def __init__(self, topic='/cmd_vel'):
+    def __init__(self, topic='/cmd_vel_in'):
         super().__init__('wasd_teleop')
         self.topic = topic
         self.pub = self.create_publisher(Twist, topic, 10)
@@ -111,6 +111,9 @@ def run_demo(node, evidence_dir):
     subscription callbacks in one executor context.
     """
     phase_label = 'Phase B' if node.topic == '/cmd_vel_in' else 'Phase A'
+    turn_speed = float(os.environ.get("DEMO_TURN_SPEED", "0.6"))
+    if not math.isfinite(turn_speed) or not 0.0 < turn_speed <= MAX_ANGULAR:
+        raise ValueError("DEMO_TURN_SPEED must be finite and in (0, 1.0]")
 
     def write_failure(reason):
         lines = [
@@ -176,7 +179,7 @@ def run_demo(node, evidence_dir):
         return write_failure("simulation time stopped during forward phase")
     s1 = node.snapshot()
     drive(0.0, 0.0, 0.5)
-    if not drive(0.0, 0.6, 3.0):
+    if not drive(0.0, turn_speed, 3.0):
         if csv:
             csv.close()
         return write_failure("simulation time stopped during turn phase")
@@ -189,15 +192,15 @@ def run_demo(node, evidence_dir):
     dyaw = math.atan2(math.sin(s2[2] - s1[2]), math.cos(s2[2] - s1[2]))
     # efficiency vs ideal (accel ramp included: ~1.10 m and ~1.54 rad)
     eff_lin = dist / 1.10
-    eff_ang = abs(dyaw) / 1.54
-    ok = dist > 0.6 and abs(dyaw) > 0.8
+    eff_ang = abs(dyaw) / max(turn_speed * 2.55, 0.01)
+    ok = dist > 0.6 and abs(dyaw) > max(0.10, turn_speed * 1.4)
 
     lines = [
         f"LunaBot V4 - {phase_label} - automated demo drive result",
         "====================================================",
         f"time                 : {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
         f"forward 3 s(sim) @ {MAX_LINEAR} m/s : distance = {dist:.3f} m (expect > 0.6 m)",
-        f"turn 3 s(sim) @ 0.6 rad/s          : yaw delta  = {dyaw:+.3f} rad (expect > 0.8 rad)",
+        f"turn 3 s(sim) @ {turn_speed:.3f} rad/s : yaw delta = {dyaw:+.3f} rad (relative gate)",
         f"forward efficiency : {eff_lin * 100:.0f}% of ideal",
         f"turn efficiency    : {eff_ang * 100:.0f}% of ideal",
         f"start pose (x,y,yaw)  : {s0[0]:.3f}, {s0[1]:.3f}, {s0[2]:.3f}",
@@ -268,8 +271,8 @@ def main():
     ap = argparse.ArgumentParser(description="LunaBot V4 WASD teleop / demo drive")
     ap.add_argument("--demo", action="store_true",
                     help="run the automated drive test instead of interactive WASD")
-    ap.add_argument("--topic", default="/cmd_vel",
-                    help="Twist command topic (Phase A: /cmd_vel; Phase B: /cmd_vel_in)")
+    ap.add_argument("--topic", default="/cmd_vel_in",
+                    help="Twist request topic (all operational phases: /cmd_vel_in)")
     ap.add_argument("evidence_dir", nargs="?", default="",
                     help="optional evidence dir for --demo results")
     args = ap.parse_args()

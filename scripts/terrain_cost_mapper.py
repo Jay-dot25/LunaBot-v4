@@ -25,6 +25,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
+from terrain_costs import GridGeometry, fuse_terrain_costs
 
 
 UNKNOWN = -1
@@ -42,6 +43,9 @@ class TerrainCostMapper(Node):
         self.declare_parameter("cost_topic", "/lunabot/terrain/cost_map")
         self.declare_parameter(
             "status_topic", "/lunabot/terrain/cost_map/status")
+        for layer in ("slope", "roughness", "crater_risk", "uncertainty"):
+            self.declare_parameter(
+                f"{layer}_topic", f"/lunabot/terrain/semantic_map/{layer}")
         self.declare_parameter("terrain_cost", 20)
         self.declare_parameter("unknown_cost", 80)
         self.declare_parameter("obstacle_cost", 100)
@@ -56,6 +60,10 @@ class TerrainCostMapper(Node):
         self.obstacle_topic = str(get("obstacle_topic").value)
         self.cost_topic = str(get("cost_topic").value)
         self.status_topic = str(get("status_topic").value)
+        self.layer_topics = {
+            layer: str(get(f"{layer}_topic").value)
+            for layer in ("slope", "roughness", "crater_risk", "uncertainty")
+        }
         self.terrain_cost = max(0, min(100, int(get("terrain_cost").value)))
         self.unknown_cost = max(0, min(100, int(get("unknown_cost").value)))
         self.obstacle_cost = max(0, min(100, int(get("obstacle_cost").value)))
@@ -67,6 +75,13 @@ class TerrainCostMapper(Node):
         input_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         self.semantic_sub = self.create_subscription(
             OccupancyGrid, self.semantic_topic, self._semantic_callback, input_qos)
+        self.layer_maps: dict[str, Optional[OccupancyGrid]] = {
+            layer: None for layer in self.layer_topics}
+        self.layer_subscriptions = [
+            self.create_subscription(
+                OccupancyGrid, topic,
+                lambda msg, name=layer: self._layer_callback(name, msg), input_qos)
+            for layer, topic in self.layer_topics.items()]
         self.obstacle_sub = self.create_subscription(
             OccupancyGrid, self.obstacle_topic, self._obstacle_callback, input_qos)
         output_qos = QoSProfile(depth=1)
@@ -98,6 +113,21 @@ class TerrainCostMapper(Node):
         if value == TERRAIN_VALUE or 0 < value < OBSTACLE_VALUE:
             return self.terrain_cost
         return self.unknown_cost
+
+    @staticmethod
+    def _geometry(msg: OccupancyGrid) -> GridGeometry:
+        origin = msg.info.origin
+        q = origin.orientation
+        return GridGeometry(
+            msg.header.frame_id, int(msg.info.width), int(msg.info.height),
+            float(msg.info.resolution), float(origin.position.x),
+            float(origin.position.y), float(origin.position.z),
+            (float(q.x), float(q.y), float(q.z), float(q.w)))
+
+    def _layer_callback(self, name: str, msg: OccupancyGrid) -> None:
+        self.layer_maps[name] = msg
+        if self.last_semantic_map is not None:
+            self._publish_cost(self.last_semantic_map)
 
     def _inflate(self, costs: list[int], width: int, height: int,
                  resolution: float) -> tuple[int, int]:
@@ -152,7 +182,29 @@ class TerrainCostMapper(Node):
         if width <= 0 or height <= 0 or len(msg.data) < width * height:
             self.publish_status("COST_MAP_INVALID_SEMANTIC_MAP")
             return
-        costs = [self._base_cost(int(value)) for value in msg.data[:width * height]]
+        semantic_geometry = self._geometry(msg)
+        required_layers = ("slope", "roughness", "crater_risk", "uncertainty")
+        if any(self.layer_maps[name] is None for name in required_layers):
+            self.publish_status("COST_MAP_WAITING_FOR_GEOMETRY_LAYERS")
+            return
+        for name in required_layers:
+            layer = self.layer_maps[name]
+            if (not semantic_geometry.compatible(self._geometry(layer))
+                    or len(layer.data) < width * height):
+                self.publish_status(f"COST_MAP_WAITING_FOR_ALIGNED_{name.upper()}")
+                return
+            if (layer.header.stamp.sec != msg.header.stamp.sec
+                    or layer.header.stamp.nanosec != msg.header.stamp.nanosec):
+                self.publish_status(f"COST_MAP_WAITING_FOR_SYNCED_{name.upper()}")
+                return
+        costs = fuse_terrain_costs(
+            list(msg.data[:width * height]),
+            slope=list(self.layer_maps["slope"].data[:width * height]),
+            roughness=list(self.layer_maps["roughness"].data[:width * height]),
+            crater_risk=list(self.layer_maps["crater_risk"].data[:width * height]),
+            uncertainty=list(self.layer_maps["uncertainty"].data[:width * height]),
+            terrain_cost=self.terrain_cost, unknown_cost=self.unknown_cost,
+            obstacle_cost=self.obstacle_cost)
         sensed_obstacles = 0
         overlay = self.last_obstacle_map
         if overlay is not None:
@@ -160,11 +212,7 @@ class TerrainCostMapper(Node):
             # the semantic grid. Ignore incompatible samples rather than
             # corrupting the planner's map.
             same_geometry = (
-                int(overlay.info.width) == width and
-                int(overlay.info.height) == height and
-                abs(float(overlay.info.resolution) - float(msg.info.resolution)) < 1e-6 and
-                abs(float(overlay.info.origin.position.x) - float(msg.info.origin.position.x)) < 1e-6 and
-                abs(float(overlay.info.origin.position.y) - float(msg.info.origin.position.y)) < 1e-6 and
+                semantic_geometry.compatible(self._geometry(overlay)) and
                 len(overlay.data) >= width * height)
             if same_geometry:
                 for index, value in enumerate(overlay.data[:width * height]):
@@ -189,7 +237,8 @@ class TerrainCostMapper(Node):
             f"terrain_cells={terrain_count} unknown_cells={unknown_count} "
             f"obstacle_cells={obstacle_count} sensed_obstacles={sensed_obstacles} "
             f"inflated_cells={inflated_count} resolution={msg.info.resolution:.2f} "
-            f"robot_radius={self.robot_radius:.2f} frame={msg.header.frame_id}")
+            f"robot_radius={self.robot_radius:.2f} "
+            f"aligned_layers={','.join(required_layers)} frame={msg.header.frame_id}")
 
 
 def main(args=None) -> None:
@@ -199,9 +248,13 @@ def main(args=None) -> None:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except Exception:
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

@@ -75,7 +75,7 @@
       <axis>
         <xyz>0 1 0</xyz>
         <limit><lower>-0.55</lower><upper>0.55</upper><effort>600</effort><velocity>1.0</velocity></limit>
-        <dynamics><damping>400</damping><friction>50</friction></dynamics>
+        <dynamics><damping>10</damping><friction>1</friction></dynamics>
       </axis>
     </joint>
     <link name="left_rocker">
@@ -95,7 +95,7 @@
       <axis>
         <xyz>0 1 0</xyz>
         <limit><lower>-0.55</lower><upper>0.55</upper><effort>600</effort><velocity>1.0</velocity></limit>
-        <dynamics><damping>400</damping><friction>50</friction></dynamics>
+        <dynamics><damping>10</damping><friction>1</friction></dynamics>
       </axis>
     </joint>
     <link name="right_rocker">
@@ -115,7 +115,7 @@
       <axis>
         <xyz>0 1 0</xyz>
         <limit><lower>-0.65</lower><upper>0.65</upper><effort>450</effort><velocity>1.2</velocity></limit>
-        <dynamics><damping>150</damping><friction>30</friction></dynamics>
+        <dynamics><damping>5</damping><friction>0.5</friction></dynamics>
       </axis>
     </joint>
     <link name="left_bogie">
@@ -135,7 +135,7 @@
       <axis>
         <xyz>0 1 0</xyz>
         <limit><lower>-0.65</lower><upper>0.65</upper><effort>450</effort><velocity>1.2</velocity></limit>
-        <dynamics><damping>150</damping><friction>30</friction></dynamics>
+        <dynamics><damping>5</damping><friction>0.5</friction></dynamics>
       </axis>
     </joint>
     <link name="right_bogie">
@@ -367,7 +367,7 @@
         <!-- Tilt the RGB camera down so the lower image field covers the rover's near ground and forward obstacles. -->
         <pose relative_to="sensor_head">0.14 0 0 0 0.25 0</pose>
         <update_rate>20</update_rate>
-        <camera><horizontal_fov>1.047</horizontal_fov><image><width>640</width><height>480</height><format>R8G8B8</format></image><clip><near>0.05</near><far>80</far></clip></camera>
+        <camera><horizontal_fov>1.047</horizontal_fov><image><width>160</width><height>120</height><format>R8G8B8</format></image><clip><near>0.05</near><far>80</far></clip></camera>
         <always_on>true</always_on><visualize>true</visualize><topic>/lunabot/camera/image_raw</topic>
       </sensor>
 
@@ -375,7 +375,7 @@
         <!-- Match the RGB optical axis so depth sees the same lower field. -->
         <pose relative_to="sensor_head">0.14 0 -0.04 0 0.25 0</pose>
         <update_rate>15</update_rate>
-        <camera><horizontal_fov>1.047</horizontal_fov><image><width>640</width><height>480</height></image><clip><near>0.10</near><far>40</far></clip></camera>
+        <camera><horizontal_fov>1.047</horizontal_fov><image><width>160</width><height>120</height></image><clip><near>0.10</near><far>40</far></clip></camera>
         <always_on>true</always_on><visualize>true</visualize><topic>/lunabot/depth/image_raw</topic>
       </sensor>
 
@@ -412,6 +412,10 @@
     </link>
     <joint name="imu_joint" type="fixed"><parent>chassis</parent><child>imu_link</child></joint>
 
+    <plugin filename="liblunabot_command_watchdog.so" name="lunabot::CommandWatchdog">
+      <timeout_sec>0.25</timeout_sec>
+    </plugin>
+
     <!-- ================= DIFFERENTIAL DRIVE ================= -->
     <plugin filename="ignition-gazebo-diff-drive-system" name="ignition::gazebo::systems::DiffDrive">
       <left_joint>left_front_wheel_joint</left_joint>
@@ -420,7 +424,8 @@
       <right_joint>right_front_wheel_joint</right_joint>
       <right_joint>right_middle_wheel_joint</right_joint>
       <right_joint>right_rear_wheel_joint</right_joint>
-      <wheel_separation>0.80</wheel_separation>
+      <!-- Calibrated effective track for wheel-odometry truth agreement. -->
+      <wheel_separation>1.03</wheel_separation>
       <wheel_radius>0.17</wheel_radius>
       <max_linear_velocity>0.45</max_linear_velocity>
       <min_linear_velocity>-0.45</min_linear_velocity>

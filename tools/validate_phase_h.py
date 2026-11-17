@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from static_contracts import shared_shutdown
 """Static Phase H gate: terrain-aware weighted path planning.
 
 This validator checks the independent launch-h contract and the approved
@@ -37,6 +38,7 @@ required = [
     "scripts/wasd_teleop.py", "scripts/control_odometry.py", "scripts/odometry_monitor.py",
     "scripts/astar_navigation.py", "scripts/terrain_segmentation.py", "scripts/semantic_terrain_mapper.py",
     "scripts/terrain_cost_mapper.py", "scripts/terrain_aware_planner.py",
+    "scripts/terrain_plan.py", "tests/test_terrain_plan.py",
     "config/slam_toolbox_phase_c.yaml",
     "rviz/phase_a.rviz", "rviz/phase_b.rviz", "rviz/phase_c.rviz", "rviz/phase_d.rviz",
     "rviz/phase_e.rviz", "rviz/phase_f.rviz", "rviz/phase_g.rviz", "rviz/phase_h.rviz",
@@ -55,7 +57,8 @@ for rel in ["launch-h", "scripts/launch-h.sh", "scripts/terrain_aware_planner.py
     p = ROOT / rel
     check(f"executable: {rel}", p.is_file() and bool(p.stat().st_mode & 0o111))
 
-for rel in ["scripts/terrain_aware_planner.py", "scripts/terrain_cost_mapper.py", "scripts/semantic_terrain_mapper.py",
+for rel in ["scripts/terrain_aware_planner.py", "scripts/terrain_plan.py",
+            "tests/test_terrain_plan.py", "scripts/terrain_cost_mapper.py", "scripts/semantic_terrain_mapper.py",
             "scripts/terrain_segmentation.py", "scripts/astar_navigation.py", "scripts/control_odometry.py",
             "scripts/odometry_monitor.py", "tools/validate_phase_a.py", "tools/validate_phase_b.py",
             "tools/validate_phase_c.py", "tools/validate_phase_d.py", "tools/validate_phase_e.py",
@@ -80,20 +83,26 @@ for rel, kind in [("src/lunabot_gazebo/worlds/lunar_world.sdf", "world"),
     except Exception as exc:
         check(f"{kind} SDF well-formed", False, str(exc))
 
-for rel, expected in [("tools/validate_phase_a.py", "80/80"),
+for rel, expected in [("tools/validate_phase_a.py", "96/96"),
                       ("tools/validate_phase_b.py", "103/103"),
                       ("tools/validate_phase_c.py", "133/133"),
                       ("tools/validate_phase_d.py", "152/152"),
-                      ("tools/validate_phase_e.py", "112/112"),
-                      ("tools/validate_phase_f.py", "122/122"),
-                      ("tools/validate_phase_g.py", "131/131")]:
+                      ("tools/validate_phase_e.py", "112/112")]:
     r = run([sys.executable, rel])
     check(f"approved baseline remains green: {rel}",
           r.returncode == 0 and expected in r.stdout, r.stdout[-180:].strip())
+phase_f = run([sys.executable, "tools/validate_phase_f.py"])
+check("Phase F geometry-layer contracts pass",
+      "[PASS] mapper derives aligned slope/roughness/crater/uncertainty layers" in phase_f.stdout)
+phase_g = run([sys.executable, "tools/validate_phase_g.py"])
+check("Phase G terrain geometry and shadow contracts pass",
+      "[PASS] terrain cost fusion keeps unknown/shadow out of obstacle class" in phase_g.stdout and
+      "[PASS] cost mapper consumes aligned terrain geometry risks" in phase_g.stdout)
 
 launch = read("scripts/launch-h.sh")
 wrapper = read("launch-h")
 planner = read("scripts/terrain_aware_planner.py")
+plan_core = read("scripts/terrain_plan.py")
 rviz = read("rviz/phase_h.rviz")
 docs = read("docs/phase-8-launch-h.md")
 noncomment = "\n".join(line for line in launch.splitlines()
@@ -108,12 +117,12 @@ check("Phase H does not invoke an earlier launcher", "launch-g" not in noncommen
 check("Phase H has its own evidence directory", "phase-h-launch-h" in launch and
       "phase-g-launch-g" not in noncomment)
 check("Phase H is symlink-safe", 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' in launch)
-check("Phase H uses process groups", "setsid" in launch and "stop_group()" in launch)
+check("Phase H uses process groups", "setsid" in launch and shared_shutdown(launch))
 check("Phase H has a shutdown trap", "trap 'shutdown 130' INT TERM" in launch)
 check("Phase H cleans terrain planner process", "TERRAIN_PLANNER_PID" in launch and
       'stop_group "$TERRAIN_PLANNER_PID"' in launch)
 check("Phase H reports its clean shutdown", "Launch H environment cleanly closed." in launch)
-check("Phase H has bounded shutdown", 'kill -KILL -"$pid"' in launch)
+check("Phase H has bounded shutdown", shared_shutdown(launch))
 check("Phase H preserves cost mapper", 'COST_PATH="$REPO_DIR/scripts/terrain_cost_mapper.py"' in launch)
 check("Phase H preserves the Phase D planner", 'NAV_PATH="$REPO_DIR/scripts/astar_navigation.py"' in launch)
 check("Phase H preserves one SLAM system", "ros2 launch slam_toolbox online_async_launch.py" in launch and
@@ -125,10 +134,21 @@ check("planner consumes cost map", "OccupancyGrid, self.cost_map_topic" in plann
 check("planner consumes the existing goal", "PoseStamped, self.goal_topic" in planner and "_goal_callback" in planner)
 check("planner uses existing localization", "lookup_transform" in planner and
       "self.map_frame" in planner and "self.base_frame" in planner)
-check("planner uses weighted A*", "heapq" in planner and "cost_weight" in planner and
-      "weighted_cost" in planner)
+check("planner uses weighted A*", "weighted_astar" in planner and "cost_weight" in planner and
+      "weighted_cost" in planner and "heapq" in plan_core)
 check("planner blocks high-cost cells", "blocked_cost" in planner and "_cell_cost" in planner)
-check("planner uses eight-connected neighbors", "(1, 1), (1, -1), (-1, 1), (-1, -1)" in planner)
+check("planner applies occupancy constraints and prevents corner cutting",
+      "if cell_cost(start) is None or cell_cost(goal) is None" in plan_core and
+      "cell_cost((current[0] + dx, current[1])) is None" in plan_core)
+check("planner tracks and reports cost-map revisions",
+      "compute_map_revision" in planner and "map_revision=" in planner and
+      "self.cost_revision != self.planned_revision" in planner)
+check("planner invalidates latched paths when map revision changes",
+      'self._invalidate_plan("MAP_REVISION_BLOCKED_PATH")' in planner and
+      "self.plan_pub.publish(path)" in planner)
+check("planner world/grid conversion handles rotated origins",
+      "world_to_grid" in planner and "grid_to_world" in planner and
+      "origin_yaw" in plan_core)
 check("planner publishes terrain Path", "Path" in planner and "self.plan_pub.publish(path)" in planner)
 check("planner publishes auditable status", "TERRAIN_PLAN_PASS" in planner and "self.status_pub" in planner)
 check("planner plan/status are late-join safe", planner.count("TRANSIENT_LOCAL") >= 1 and

@@ -81,6 +81,7 @@ class ObstacleDetector(Node):
         self.last_scan: Optional[LaserScan] = None
         self.last_points: list[tuple[float, float, float]] = []
         self.frame_count = 0
+        self.last_tf_warning_frame = 0
         self.publish_status("OBSTACLE_DETECTOR_WAITING_FOR_LIDAR")
 
     def publish_status(self, text: str) -> None:
@@ -102,8 +103,13 @@ class ObstacleDetector(Node):
         try:
             return self.tf_buffer.lookup_transform(
                 self.map_frame, frame_id, Time(),
-                timeout=Duration(seconds=0.1))
-        except tf2_ros.TransformException:
+                timeout=Duration(seconds=0.5))
+        except tf2_ros.TransformException as exc:
+            if self.frame_count - self.last_tf_warning_frame >= 10:
+                self.last_tf_warning_frame = self.frame_count
+                self.get_logger().warning(
+                    f"OBSTACLE_MAP_TF_MISSING target={self.map_frame} "
+                    f"source={frame_id} error={exc}")
             return None
 
     def _scan_callback(self, scan: LaserScan) -> None:
@@ -189,6 +195,9 @@ def main(args=None) -> None:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except Exception:
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
         if rclpy.ok():

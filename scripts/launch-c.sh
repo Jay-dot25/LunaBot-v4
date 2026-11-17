@@ -31,8 +31,11 @@ WASD_PATH="$REPO_DIR/scripts/wasd_teleop.py"
 CONTROL_PATH="$REPO_DIR/scripts/control_odometry.py"
 ODOM_PATH="$REPO_DIR/scripts/odometry_monitor.py"
 SLAM_CONFIG="$REPO_DIR/config/slam_toolbox_phase_c.yaml"
+SLAM_LOCALIZATION_CONFIG="$REPO_DIR/config/slam_toolbox_localization.yaml"
+SLAM_MODE="${SLAM_MODE:-mapping}"
+SLAM_MAP_FILE="${SLAM_MAP_FILE:-}"
 RVIZ_CONFIG="$REPO_DIR/rviz/phase_c.rviz"
-EVIDENCE_DIR="$REPO_DIR/evidence/phase-c-launch-c"
+EVIDENCE_DIR="${EVIDENCE_DIR:-$REPO_DIR/evidence/phase-c-launch-c}"
 LOG_FILE="$EVIDENCE_DIR/last_run.log"
 
 SPAWN_Z="-2.308"
@@ -46,6 +49,7 @@ GAZEBO_PID=""
 BRIDGE_PID=""
 RVIZ_PID=""
 CONTROL_PID=""
+HEALTH_PID=""
 ODOM_PID=""
 SLAM_PID=""
 TF_PIDS=()
@@ -61,16 +65,7 @@ log() { echo "$@" >> "$LOG_FILE"; }
 
 # Terminate a launcher/node process group, wait briefly, then force-kill only
 # that group. This prevents a Phase C relaunch from inheriting old children.
-stop_group() {
-  local pid="${1:-}"
-  [ -n "$pid" ] || return 0
-  kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
-  for _ in $(seq 1 20); do
-    kill -0 "$pid" 2>/dev/null || return 0
-    sleep 0.25
-  done
-  kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
-}
+source "$REPO_DIR/scripts/process_helpers.sh"
 
 save_final_map() {
   [ "$MAP_SAVE_DONE" = "1" ] && return 0
@@ -83,8 +78,29 @@ save_final_map() {
     --ros-args -p save_map_timeout:=10.0 2>/dev/null \
     >> "$EVIDENCE_DIR/map_saver.log" 2>&1 || true
   if [ -s "$EVIDENCE_DIR/phase_c_map.yaml" ] && [ -s "$EVIDENCE_DIR/phase_c_map.pgm" ]; then
+    # map_saver_cli emits PGM value 205 for unknown cells. With its default
+    # free threshold (0.25), map_server reloads that value as free. Keep the
+    # threshold just below 50/255 so trinary loading preserves unknown cells.
+    if ! python3 - "$EVIDENCE_DIR/phase_c_map.yaml" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+updated, count = re.subn(r"(?m)^free_thresh:\s*[^\n]+$", "free_thresh: 0.19", text)
+if count != 1:
+    raise SystemExit(f"expected one free_thresh in {path}, found {count}")
+path.write_text(updated, encoding="utf-8")
+PY
+    then
+      say "      saved map unknown-space metadata: FAIL"
+      log "validation FAIL: could not preserve unknown occupancy values"
+      OVERALL="FAIL"
+      return 1
+    fi
     say "      saved map evidence (YAML + PGM): PASS"
-    log "validation PASS: final map files saved"
+    log "validation PASS: final map files saved; free threshold preserves unknown cells"
     return 0
   fi
   say "      saved map evidence (YAML + PGM): FAIL"
@@ -121,6 +137,7 @@ shutdown() {
   [ -n "$BRIDGE_PID" ] && stop_group "$BRIDGE_PID"
   for p in ${TF_PIDS[@]+"${TF_PIDS[@]}"}; do stop_group "$p"; done
   [ -n "$RVIZ_PID" ] && stop_group "$RVIZ_PID"
+  [ -n "$HEALTH_PID" ] && stop_group "$HEALTH_PID"
   if [ -n "$GAZEBO_PID" ]; then
     kill -TERM -"$GAZEBO_PID" 2>/dev/null || kill -TERM "$GAZEBO_PID" 2>/dev/null || true
     for _ in $(seq 1 20); do
@@ -133,9 +150,7 @@ shutdown() {
     wait "$GAZEBO_PID" 2>/dev/null || true
     say "      Gazebo stopped."
   fi
-  for p in $(pgrep -f "lunar_world.sdf" 2>/dev/null || true); do
-    kill -9 "$p" 2>/dev/null || true
-  done
+  # Gazebo cleanup is restricted to this launcher's owned process group.
   echo "" >> "$LOG_FILE"
   echo "clean shutdown at $(date -u +%FT%TZ)" >> "$LOG_FILE"
   say "Launch C environment cleanly closed."
@@ -167,8 +182,9 @@ say "Launch mode: $([ "$HEADLESS" = 1 ] && echo HEADLESS || echo GUI) | demo=$([
 echo "[1/13] Checking Phase A baseline + Phase C files....."
 missing=0
 for f in "$WORLD_PATH" "$MODEL_PATH" "$WASD_PATH" "$CONTROL_PATH" "$ODOM_PATH" "$SLAM_CONFIG" \
-         "$RVIZ_CONFIG" "$WORLD_DIR/meshes/lunar_terrain.obj" \
-         "$WORLD_DIR/meshes/lunar_terrain_collision.obj"; do
+         "$SLAM_LOCALIZATION_CONFIG" "$RVIZ_CONFIG" "$WORLD_DIR/meshes/lunar_terrain.obj" \
+         "$WORLD_DIR/meshes/lunar_terrain_collision.obj" \
+         "$WORLD_DIR/meshes/lunar_terrain_mission_collision.obj"; do
   if [ ! -f "$f" ]; then
     say "      MISSING: $f"
     missing=1
@@ -245,7 +261,7 @@ if [ -n "$stale" ]; then
 fi
 # A prior interrupted `ros2 run` can leave its child bridge alive. Remove
 # only processes belonging to this Phase C command/node contract.
-for pattern in "ros_ign_bridge.*parameter_bridge" "ros_gz_bridge.*parameter_bridge" \
+for pattern in "scripts/health_monitor.py" "ros_ign_bridge.*parameter_bridge" "ros_gz_bridge.*parameter_bridge" \
                "scripts/control_odometry.py" "scripts/odometry_monitor.py" "slam_toolbox.*online_async"; do
   for p in $(pgrep -f "$pattern" 2>/dev/null || true); do
     kill -TERM "$p" 2>/dev/null || true
@@ -256,6 +272,8 @@ echo "      clean state: OK"
 log "[3/13] clean state OK"
 
 # ------------------------------------------------------------
+source "$REPO_DIR/scripts/prepare_safety_plugin.sh"
+
 # [4/13] Start Gazebo - same validated Phase A world
 # ------------------------------------------------------------
 echo "[4/13] Starting Gazebo lunar world.................."
@@ -315,14 +333,16 @@ log "[5/13] spawn OK (z=$SPAWN_Z)"
 echo "[6/13] Starting ROS 2 <-> Gazebo bridge............."
 : > "$EVIDENCE_DIR/bridge.log"
 setsid ros2 run "$BRIDGE_PKG" parameter_bridge \
-  "/cmd_vel@geometry_msgs/msg/Twist]$MSGNS.Twist" \
+  "/lunabot/actuator_request@geometry_msgs/msg/Twist]$MSGNS.Twist" \
   "/clock@rosgraph_msgs/msg/Clock[$MSGNS.Clock" \
   "/lunabot/camera/image_raw@sensor_msgs/msg/Image[$MSGNS.Image" \
+  "/lunabot/camera/camera_info@sensor_msgs/msg/CameraInfo[$MSGNS.CameraInfo" \
   "/lunabot/depth/image_raw@sensor_msgs/msg/Image[$MSGNS.Image" \
+  "/lunabot/depth/camera_info@sensor_msgs/msg/CameraInfo[$MSGNS.CameraInfo" \
   "/lunabot/lidar/scan@sensor_msgs/msg/LaserScan[$MSGNS.LaserScan" \
   "/lunabot/imu@sensor_msgs/msg/Imu[$MSGNS.IMU" \
   "/lunabot/odom@nav_msgs/msg/Odometry[$MSGNS.Odometry" \
-  "/lunabot/joint_states@sensor_msgs/JointState[$MSGNS.Model" \
+  "/lunabot/joint_states@sensor_msgs/msg/JointState[$MSGNS.Model" \
   "/tf@tf2_msgs/msg/TFMessage[$MSGNS.Pose_V" \
   "/lunabot/steer/front_left@std_msgs/msg/Float64]$MSGNS.Double" \
   "/lunabot/steer/front_right@std_msgs/msg/Float64]$MSGNS.Double" \
@@ -330,6 +350,8 @@ setsid ros2 run "$BRIDGE_PKG" parameter_bridge \
   "/lunabot/steer/rear_right@std_msgs/msg/Float64]$MSGNS.Double" \
   "/lunabot/mast/pan@std_msgs/msg/Float64]$MSGNS.Double" \
   "/lunabot/mast/tilt@std_msgs/msg/Float64]$MSGNS.Double" \
+  "/lunabot/actuator_watchdog/state@std_msgs/msg/String[$MSGNS.StringMsg" \
+  --ros-args -r /lunabot/actuator_request:=/cmd_vel \
   >> "$EVIDENCE_DIR/bridge.log" 2>&1 &
 BRIDGE_PID=$!
 sleep 3
@@ -342,13 +364,17 @@ log "[6/13] bridge OK (pid $BRIDGE_PID)"
 # ------------------------------------------------------------
 echo "[7/13] Starting static TF (sensor frames)............"
 TF_SPECS=(
-  "chassis|sensor_head|0.18 0 0.85 0 0 0"
-  "sensor_head|rgb_camera|0.14 0 0 0 0 0"
-  "sensor_head|depth_camera|0.14 0 -0.04 0 0 0"
+  "sensor_head|rgb_camera|0.14 0 0 0 0.25 0"
+  "sensor_head|depth_camera|0.14 0 -0.04 0 0.25 0"
   "sensor_head|lidar|0.02 0 0.09 0 0.5 0"
   # Gazebo Fortress scopes the LaserScan frame in the message. Keep the
   # Phase B unscoped alias and add the exact frame used by slam_toolbox.
   "sensor_head|lunabot_v4/sensor_head/lidar|0.02 0 0.09 0 0.5 0"
+  # Scoped sensor headers and ROS optical camera axes.
+  "chassis|imu_link|0 0 0.10 0 0 0"
+  "imu_link|lunabot_v4/imu_link/imu|0 0 0 0 0 0"
+  "rgb_camera|lunabot_v4/sensor_head/rgb_camera|0 0 0 -1.5707963267948966 0 -1.5707963267948966"
+  "depth_camera|lunabot_v4/sensor_head/depth_camera|0 0 0 -1.5707963267948966 0 -1.5707963267948966"
 )
 for spec in "${TF_SPECS[@]}"; do
   IFS='|' read -r parent child xyzrpy <<< "$spec"
@@ -357,7 +383,12 @@ for spec in "${TF_SPECS[@]}"; do
     >> "$EVIDENCE_DIR/gazebo.log" 2>&1 &
   TF_PIDS+=("$!")
 done
-echo "      5 static transforms published (including scoped Gazebo LaserScan frame)"
+# Articulated mast transform follows measured joints, not a fixed neutral pose.
+setsid python3 "$REPO_DIR/scripts/sensor_mount_tf.py" \
+  >> "$EVIDENCE_DIR/gazebo.log" 2>&1 &
+TF_PIDS+=("$!")
+
+echo "      8 static transforms + dynamic mast published (including scoped Gazebo LaserScan frame)"
 log "[7/13] static TF OK"
 
 # ------------------------------------------------------------
@@ -365,8 +396,11 @@ log "[7/13] static TF OK"
 # ------------------------------------------------------------
 echo "[8/13] Starting Phase C control layer................"
 : > "$EVIDENCE_DIR/control.log"
+setsid python3 "$REPO_DIR/scripts/health_monitor.py" --require-map \
+  >> "$EVIDENCE_DIR/health.log" 2>&1 &
+HEALTH_PID=$!
 setsid python3 "$CONTROL_PATH" \
-  --input-topic /cmd_vel_in --output-topic /cmd_vel \
+  --input-topic /cmd_vel_in --output-topic /cmd_vel --require-map \
   --max-linear 0.45 --max-angular 1.0 \
   --max-linear-accel 0.4 --max-angular-accel 0.8 \
   --watchdog-sec 0.5 --rate 30 \
@@ -393,16 +427,45 @@ log "[9/13] odometry monitor OK (pid $ODOM_PID)"
 # ------------------------------------------------------------
 # [10/13] Phase C SLAM and localization
 # ------------------------------------------------------------
-echo "[10/13] Starting slam_toolbox mapping................"
 : > "$EVIDENCE_DIR/slam.log"
-setsid ros2 launch slam_toolbox online_async_launch.py \
-  slam_params_file:="$SLAM_CONFIG" use_sim_time:=true \
-  >> "$EVIDENCE_DIR/slam.log" 2>&1 &
+case "$SLAM_MODE" in
+  mapping)
+    echo "[10/13] Starting slam_toolbox mapping................"
+    setsid ros2 launch slam_toolbox online_async_launch.py \
+      slam_params_file:="$SLAM_CONFIG" use_sim_time:=true \
+      >> "$EVIDENCE_DIR/slam.log" 2>&1 &
+    ;;
+  localization)
+    [ -n "$SLAM_MAP_FILE" ] || abort "SLAM_MODE=localization requires SLAM_MAP_FILE (pose-graph basename)"
+    [ -f "$SLAM_MAP_FILE.posegraph" ] && [ -f "$SLAM_MAP_FILE.data" ] || abort "saved pose graph files not found for $SLAM_MAP_FILE"
+    echo "[10/13] Starting slam_toolbox saved-map localization..."
+    setsid ros2 launch slam_toolbox localization_launch.py \
+      slam_params_file:="$SLAM_LOCALIZATION_CONFIG" use_sim_time:=true \
+      >> "$EVIDENCE_DIR/slam.log" 2>&1 &
+    ;;
+  *) abort "unsupported SLAM_MODE: $SLAM_MODE (use mapping or localization)" ;;
+esac
 SLAM_PID=$!
 sleep 4
 kill -0 "$SLAM_PID" 2>/dev/null || abort "slam_toolbox exited; see $EVIDENCE_DIR/slam.log"
-echo "      slam_toolbox running (PID $SLAM_PID), mapping /lunabot/lidar/scan"
-log "[10/13] slam_toolbox OK (pid $SLAM_PID)"
+if [ "$SLAM_MODE" = "localization" ]; then
+  service_ready=0
+  for _ in $(seq 1 30); do
+    if ros2 service type /slam_toolbox/deserialize_map >/dev/null 2>&1; then service_ready=1; break; fi
+    sleep 1
+  done
+  [ "$service_ready" -eq 1 ] || abort "slam_toolbox deserialize_map service did not become ready"
+  response="$(timeout 20 ros2 service call /slam_toolbox/deserialize_map slam_toolbox/srv/DeserializePoseGraph \
+    "{filename: \"$SLAM_MAP_FILE\", match_type: 3, initial_pose: {x: 0.0, y: 0.0, theta: 0.0}}")" || abort "saved pose graph service call failed"
+  echo "$response" >> "$EVIDENCE_DIR/slam.log"
+  if ! timeout 25 python3 "$REPO_DIR/tools/verify_map_content.py" --minimum-known-cells 1 --timeout-sec 20 >> "$EVIDENCE_DIR/slam.log" 2>&1; then
+    abort "saved pose graph did not restore a non-empty map; see $EVIDENCE_DIR/slam.log"
+  fi
+  echo "      saved pose graph loaded; non-empty map verified at initial pose (0,0,0)"
+else
+  echo "      slam_toolbox running (PID $SLAM_PID), mapping /lunabot/lidar/scan"
+fi
+log "[10/13] slam_toolbox $SLAM_MODE OK (pid $SLAM_PID)"
 
 # ------------------------------------------------------------
 # [11/13] RViz2
@@ -412,7 +475,7 @@ if [ "$HEADLESS" = "1" ]; then
   log "[11/13] rviz skipped (headless)"
 else
   echo "[11/13] Starting RViz2.............................."
-  setsid rviz2 -d "$RVIZ_CONFIG" -f odom >> "$EVIDENCE_DIR/gazebo.log" 2>&1 &
+  setsid rviz2 -d "$RVIZ_CONFIG" -f odom --ros-args -p use_sim_time:=true >> "$EVIDENCE_DIR/gazebo.log" 2>&1 &
   RVIZ_PID=$!
   sleep 2
   if kill -0 "$RVIZ_PID" 2>/dev/null; then
@@ -521,12 +584,12 @@ if [ "$EVIDENCE" = "1" ]; then
     > "$EVIDENCE_DIR/odom_sample.txt"
   timeout 25 ros2 topic echo /lunabot/imu --qos-reliability best_effort --once 2>/dev/null \
     > "$EVIDENCE_DIR/imu_sample.txt"
-  timeout 25 ros2 run tf2_ros tf2_echo odom chassis 2>/dev/null \
-    > "$EVIDENCE_DIR/tf_odom_chassis.txt" || true
-  timeout 25 ros2 run tf2_ros tf2_echo map odom 2>/dev/null \
-    > "$EVIDENCE_DIR/tf_map_odom.txt" || true
-  timeout 25 ros2 run tf2_ros tf2_echo sensor_head lunabot_v4/sensor_head/lidar 2>/dev/null \
-    > "$EVIDENCE_DIR/tf_lidar_scoped.txt" || true
+  timeout 5 ros2 run tf2_ros tf2_echo odom chassis \
+    > "$EVIDENCE_DIR/tf_odom_chassis.txt" 2>&1 || true
+  timeout 5 ros2 run tf2_ros tf2_echo map odom \
+    > "$EVIDENCE_DIR/tf_map_odom.txt" 2>&1 || true
+  timeout 5 ros2 run tf2_ros tf2_echo sensor_head lunabot_v4/sensor_head/lidar \
+    > "$EVIDENCE_DIR/tf_lidar_scoped.txt" 2>&1 || true
   timeout 20 ros2 topic echo /map --qos-reliability best_effort --once 2>/dev/null \
     > "$EVIDENCE_DIR/map_sample.txt"
   if [ "$MAP_SAVER_AVAILABLE" = "1" ]; then
@@ -557,7 +620,7 @@ echo "Watchdog          : RUNNING (0.5 s timeout)"
 echo "Odometry          : RUNNING (/lunabot/odom monitor)"
 echo "Sensors           : RUNNING (camera, depth, lidar, imu)"
 echo "Bridge            : RUNNING (16 mappings)"
-echo "TF                : RUNNING (odom->chassis + 5 static)"
+echo "TF                : RUNNING (odom->chassis + 8 static + dynamic mast)"
 printf "RViz2             : %s\n" "$( [ "$HEADLESS" = 1 ] && echo "skipped (headless)" || echo "RUNNING" )"
 echo ""
 echo "------------------------------------------------------------"
@@ -597,6 +660,18 @@ fi
 # ------------------------------------------------------------
 # Drive: Phase C input topic -> controller -> DiffDrive
 # ------------------------------------------------------------
+# Startup authorization; never automatically clears a runtime health/stop latch.
+if ! python3 "$REPO_DIR/scripts/arm_safety.py" --timeout 60; then
+  echo "ERROR: safety startup arming failed"
+  shutdown 1
+fi
+
+if [ "${HOLD:-0}" = "1" ]; then
+  echo "HEADLESS HOLD READY (Phase C SLAM)"
+  while kill -0 "$GAZEBO_PID" 2>/dev/null; do sleep 1; done
+  abort "Gazebo exited during hold"
+fi
+
 if [ "$DEMO" = "1" ]; then
   echo ""
   echo "============================================================"

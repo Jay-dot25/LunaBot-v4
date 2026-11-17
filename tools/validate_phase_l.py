@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from static_contracts import shared_shutdown
 """Static Phase L gate: final mission demonstration.
 
 Static checks protect the approved Phase A-K baseline. A real workstation run
@@ -50,6 +51,8 @@ required = [
     "launch-g", "launch-h", "launch-i", "launch-j", "launch-k", "launch-l",
     "scripts/launch-k.sh", "scripts/launch-l.sh",
     "scripts/phase_k_evaluator.py", "scripts/phase_l_mission.py",
+    "scripts/mission_lifecycle.py",
+    "scripts/mission_event_store.py",
     "scripts/obstacle_detector.py", "scripts/terrain_cost_mapper.py",
     "tools/validate_phase_k.py", "tools/validate_phase_l.py",
     "docs/phase-11-launch-k.md", "docs/phase-12-launch-l.md",
@@ -69,7 +72,9 @@ for rel in ["launch-l", "scripts/launch-l.sh", "scripts/phase_l_mission.py",
     path = ROOT / rel
     check(f"executable: {rel}", path.is_file() and bool(path.stat().st_mode & 0o111))
 
-for rel in ["scripts/phase_l_mission.py", "scripts/phase_k_evaluator.py",
+for rel in ["scripts/phase_l_mission.py", "scripts/mission_lifecycle.py",
+            "scripts/mission_event_store.py",
+            "scripts/phase_k_evaluator.py",
             "scripts/obstacle_detector.py", "scripts/astar_navigation.py",
             "scripts/terrain_cost_mapper.py", "scripts/dynamic_replan_monitor.py",
             "scripts/terrain_aware_planner.py",
@@ -118,9 +123,9 @@ check("Phase L is independent of launch-k", "launch-k" not in noncomment and
 check("Phase L uses its own evidence directory", "phase-l-launch-l" in launch and
       "phase-k-launch-k" not in noncomment)
 check("Phase L is symlink-safe", 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' in launch)
-check("Phase L uses process groups", "setsid" in launch and "stop_group()" in launch)
+check("Phase L uses process groups", "setsid" in launch and shared_shutdown(launch))
 check("Phase L has a shutdown trap", "trap 'shutdown 130' INT TERM" in launch)
-check("Phase L cleans mission observer", 'stop_group "$MISSION_PID"' in launch and
+check("Phase L cleans mission lifecycle supervisor", 'stop_group "$MISSION_PID"' in launch and
       'MISSION_PID=""' in launch)
 check("Phase L cleans inherited evaluator", 'stop_group "$EVALUATOR_PID"' in launch)
 check("Phase L reports clean shutdown", "Launch L environment cleanly closed." in launch)
@@ -169,7 +174,7 @@ check("world contains habitat presentation models", "lunar_habitat_main" in worl
 check("world contains a physical presentation obstacle", "presentation_obstacle_forward" in world and
       "obstacle_collision" in world)
 
-# Observation-only mission supervisor contract.
+# Mission lifecycle supervisor contract.
 check("mission supervisor is a ROS node", "class PhaseLMission(Node)" in mission)
 check("mission supervisor observes terrain plan", "Path" in mission and
       "self.plan_seen" in mission)
@@ -187,6 +192,44 @@ check("mission supervisor observes real goal", "PoseStamped" in mission and
       "self.goal_seen" in mission)
 check("mission supervisor observes map", "OccupancyGrid" in mission and
       "self.map_seen" in mission)
+check("mission lifecycle rejects invalid maps and tracks a goal ID",
+      "validate_occupancy_grid" in mission and "MISSION_MAP_REJECTED" in mission and
+      "validate_goal_pose" in mission and "MISSION_GOAL_REJECTED" in mission and
+      "goal_identifier" in mission and "active_goal_id" in mission)
+check("mission lifecycle gates map, goal, plan, active and completion states",
+      "MissionLifecycle()" in mission and
+      all(state in mission for state in
+          ("WAITING_FOR_MAP", "WAITING_FOR_GOAL", "READY", "ACTIVE", "COMPLETED")))
+check("new goal clears prior goal-scoped evidence",
+      "new_goal_id != self.active_goal_id" in mission and
+      "self.plan_seen = False" in mission and
+      "self.replan_pass = False" in mission and
+      "self.goal_reached = False" in mission)
+event_store = read("scripts/mission_event_store.py")
+check("mission event store is durable and idempotent",
+      "sqlite3" in event_store and "PRIMARY KEY" in event_store and
+      "INSERT OR IGNORE" in event_store and "synchronous=FULL" in event_store)
+check("mission accepts pause/cancel/recovery/e-stop/delivery commands",
+      all(command in mission for command in
+          ("PAUSE", "RESUME", "CANCEL", "RECOVER", "RESET_ESTOP", "DELIVER")) and
+      "DELIVERY_COMPLETED" in mission and "emergency_stop" in mission)
+follower = read("scripts/terrain_path_follower.py")
+check("mission status gates motion and stale supervisor state stops safely",
+      "mission_status_topic" in follower and
+      "self.mission_motion_allowed = state == \"ACTIVE\"" in follower and
+      "mission_status_timeout" in follower and
+      "INTEGRATION_MISSION_HOLD_STOP" in follower)
+check("obstacle route invalidation allows replanning while hard stops block",
+      "INTEGRATION_PATH_INVALIDATED_OBSTACLE" not in mission and
+      all(token in mission for token in (
+          "INTEGRATION_LOCAL_OBSTACLE_STOP",
+          "INTEGRATION_STALE_TERRAIN_PLAN_STOP",
+          "INTEGRATION_STALE_OBSTACLE_MAP_STOP")))
+check("Phase L wires command/event persistence and mission gate",
+      "/lunabot/mission/command" in launch and
+      "/lunabot/mission/events" in launch and
+      "mission_events.sqlite3" in launch and
+      "mission_status_topic:=/lunabot/mission/status" in launch)
 check("mission supervisor emits retained pass", "MISSION_DEMO_PASS" in mission and
       "self.status_pub" in mission and "TRANSIENT_LOCAL" in mission)
 check("mission supervisor has no motion publisher", "create_publisher(Twist" not in mission and
@@ -196,6 +239,25 @@ obstacle = read("scripts/obstacle_detector.py")
 check("obstacle detector is observation-only", "LaserScan" in obstacle and
       "create_publisher(Twist" not in obstacle and
       "OBSTACLE_DETECTED" in obstacle)
+follower = read("scripts/terrain_path_follower.py")
+replan_monitor = read("scripts/dynamic_replan_monitor.py")
+check("follower invalidates a blocked route before resuming motion",
+      "_invalidate_path_for_obstacle" in follower and
+      "self.path = []" in follower and
+      "self._publish_stop()" in follower and
+      "invalidated_path_signature" in follower)
+check("follower reports stop and changed-path latency",
+      "detection_to_stop_ms=" in follower and
+      "replan_latency_ms=" in follower and
+      "INTEGRATION_REPLAN_ACCEPTED" in follower)
+check("replan monitor measures obstacle-to-plan latency",
+      "obstacle_replan_latency_ms" in replan_monitor and
+      "DYNAMIC_REPLAN_WAITING_FOR_OBSTACLE_REPLAN" in replan_monitor and
+      "time.monotonic()" in replan_monitor)
+check("Phase L requires fresh obstacle map before following",
+      "require_obstacle_map:=true" in launch and
+      'FOLLOWER_OBSTACLE_MAP_TIMEOUT="1.0"' in launch and
+      'obstacle_map_timeout:="$FOLLOWER_OBSTACLE_MAP_TIMEOUT"' in launch)
 cost_mapper = read("scripts/terrain_cost_mapper.py")
 check("cost map consumes sensed obstacle overlay", "obstacle_topic" in cost_mapper and
       "sensed_obstacles" in cost_mapper)
@@ -225,13 +287,23 @@ for phrase, name in [
     ("DEMO=1 AUTO_GOAL=true REQUIRE_MANUAL_GOAL=false", "automated command"),
     ("MISSION_DEMO_PASS", "mission acceptance"),
     ("/lunabot/mission/status", "status output"),
-    ("do not publish velocity", "safety boundary"),
+    ("does not publish velocity", "safety boundary"),
     ("clean relaunch", "relaunch"),
     ("no later phase is defined", "final-phase gate"),
 ]:
     check(f"docs contain {name}", phrase in docs)
 check("validator is honest about runtime", "never substitutes" in read("tools/validate_phase_l.py") and
       "real workstation run" in read("tools/validate_phase_l.py"))
+check("docs define mission lifecycle, map rejection, and goal IDs",
+      "Mission lifecycle interface" in docs and
+      "MISSION_MAP_REJECTED" in docs and "goal ID" in docs)
+check("docs define durable delivery idempotency and motion gate",
+      "DELIVER <delivery-id>" in docs and "duplicate=1" in docs and
+      "only in ACTIVE" in docs and "mission_events.sqlite3" in docs)
+check("docs define obstacle latency clock boundaries",
+      "detection_to_stop_ms" in docs and
+      "obstacle_replan_latency_ms" in docs and
+      "monotonic clocks" in docs)
 
 passed = sum(ok for _, ok, _ in checks)
 print("=" * 64)

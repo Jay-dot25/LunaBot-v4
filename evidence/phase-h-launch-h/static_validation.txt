@@ -22,6 +22,8 @@
 [PASS] file exists: scripts/semantic_terrain_mapper.py
 [PASS] file exists: scripts/terrain_cost_mapper.py
 [PASS] file exists: scripts/terrain_aware_planner.py
+[PASS] file exists: scripts/terrain_plan.py
+[PASS] file exists: tests/test_terrain_plan.py
 [PASS] file exists: config/slam_toolbox_phase_c.yaml
 [PASS] file exists: rviz/phase_a.rviz
 [PASS] file exists: rviz/phase_b.rviz
@@ -54,6 +56,8 @@
 [PASS] executable: scripts/terrain_aware_planner.py
 [PASS] executable: tools/validate_phase_h.py
 [PASS] Python syntax: scripts/terrain_aware_planner.py
+[PASS] Python syntax: scripts/terrain_plan.py
+[PASS] Python syntax: tests/test_terrain_plan.py
 [PASS] Python syntax: scripts/terrain_cost_mapper.py
 [PASS] Python syntax: scripts/semantic_terrain_mapper.py
 [PASS] Python syntax: scripts/terrain_segmentation.py
@@ -86,27 +90,23 @@
 [PASS] world SDF well-formed
 [PASS] model SDF well-formed
 [PASS] approved baseline remains green: tools/validate_phase_a.py - ==
-RESULT: 80/80 checks passed - ALL PASS
+RESULT: 96/96 checks passed - ALL PASS
 ============================================================
-report: /tmp/lunabot-phase-a/evidence/phase-a-launch-a/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-a-launch-a/static_validation.txt
 [PASS] approved baseline remains green: tools/validate_phase_b.py - RESULT: 103/103 checks passed - ALL PASS
 ============================================================
-report: /tmp/lunabot-phase-a/evidence/phase-b-launch-b/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-b-launch-b/static_validation.txt
 [PASS] approved baseline remains green: tools/validate_phase_c.py - ULT: 133/133 checks passed - ALL PASS
 ================================================================
-report: /tmp/lunabot-phase-a/evidence/phase-c-launch-c/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-c-launch-c/static_validation.txt
 [PASS] approved baseline remains green: tools/validate_phase_d.py - ULT: 152/152 checks passed - ALL PASS
 ================================================================
-report: /tmp/lunabot-phase-a/evidence/phase-d-launch-d/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-d-launch-d/static_validation.txt
 [PASS] approved baseline remains green: tools/validate_phase_e.py - ULT: 112/112 checks passed - ALL PASS
 ================================================================
-report: /tmp/lunabot-phase-a/evidence/phase-e-launch-e/static_validation.txt
-[PASS] approved baseline remains green: tools/validate_phase_f.py - ULT: 122/122 checks passed - ALL PASS
-================================================================
-report: /tmp/lunabot-phase-a/evidence/phase-f-launch-f/static_validation.txt
-[PASS] approved baseline remains green: tools/validate_phase_g.py - ULT: 131/131 checks passed - ALL PASS
-================================================================
-report: /tmp/lunabot-phase-a/evidence/phase-g-launch-g/static_validation.txt
+report: /home/jay/lunabot-v4/evidence/phase-e-launch-e/static_validation.txt
+[PASS] Phase F geometry-layer contracts pass
+[PASS] Phase G terrain geometry and shadow contracts pass
 [PASS] root launch-h resolves its real path
 [PASS] root launch-h execs scripts/launch-h.sh
 [PASS] Phase H does not invoke an earlier launcher
@@ -126,7 +126,10 @@ report: /tmp/lunabot-phase-a/evidence/phase-g-launch-g/static_validation.txt
 [PASS] planner uses existing localization
 [PASS] planner uses weighted A*
 [PASS] planner blocks high-cost cells
-[PASS] planner uses eight-connected neighbors
+[PASS] planner applies occupancy constraints and prevents corner cutting
+[PASS] planner tracks and reports cost-map revisions
+[PASS] planner invalidates latched paths when map revision changes
+[PASS] planner world/grid conversion handles rotated origins
 [PASS] planner publishes terrain Path
 [PASS] planner publishes auditable status
 [PASS] planner plan/status are late-join safe
@@ -158,4 +161,4 @@ report: /tmp/lunabot-phase-a/evidence/phase-g-launch-g/static_validation.txt
 [PASS] docs contain Phase I gate
 [PASS] validator is honest about runtime
 
-RESULT: 144/144 checks passed
+RESULT: 151/151 checks passed

@@ -34,7 +34,7 @@ ODOM_PATH="$REPO_DIR/scripts/odometry_monitor.py"
 SLAM_CONFIG="$REPO_DIR/config/slam_toolbox_phase_c.yaml"
 NAV_PATH="$REPO_DIR/scripts/astar_navigation.py"
 RVIZ_CONFIG="$REPO_DIR/rviz/phase_d.rviz"
-EVIDENCE_DIR="$REPO_DIR/evidence/phase-d-launch-d"
+EVIDENCE_DIR="${EVIDENCE_DIR:-$REPO_DIR/evidence/phase-d-launch-d}"
 LOG_FILE="$EVIDENCE_DIR/last_run.log"
 
 SPAWN_Z="-2.308"
@@ -43,12 +43,18 @@ HEADLESS="${HEADLESS:-0}"
 DEMO="${DEMO:-0}"
 EVIDENCE="${EVIDENCE:-0}"
 AUTO_GOAL="${AUTO_GOAL:-false}"
+if [ "${LIBGL_ALWAYS_SOFTWARE:-0}" = "1" ]; then
+  export LP_NUM_THREADS="${LP_NUM_THREADS:-2}"
+  export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+  export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+fi
 
 OVERALL="PASS"
 GAZEBO_PID=""
 BRIDGE_PID=""
 RVIZ_PID=""
 CONTROL_PID=""
+HEALTH_PID=""
 ODOM_PID=""
 SLAM_PID=""
 NAV_PID=""
@@ -66,16 +72,7 @@ log() { echo "$@" >> "$LOG_FILE"; }
 
 # Terminate a launcher/node process group, wait briefly, then force-kill only
 # that group. This prevents a Phase D relaunch from inheriting old children.
-stop_group() {
-  local pid="${1:-}"
-  [ -n "$pid" ] || return 0
-  kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
-  for _ in $(seq 1 20); do
-    kill -0 "$pid" 2>/dev/null || return 0
-    sleep 0.25
-  done
-  kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
-}
+source "$REPO_DIR/scripts/process_helpers.sh"
 
 save_final_map() {
   [ "$MAP_SAVE_DONE" = "1" ] && return 0
@@ -99,6 +96,8 @@ save_final_map() {
 }
 
 shutdown() {
+  trap '' INT TERM
+  trap - EXIT
   local rc="${1:-$EXIT_CODE}"
   trap - INT TERM
   say ""
@@ -136,6 +135,7 @@ shutdown() {
   [ -n "$BRIDGE_PID" ] && stop_group "$BRIDGE_PID"
   for p in ${TF_PIDS[@]+"${TF_PIDS[@]}"}; do stop_group "$p"; done
   [ -n "$RVIZ_PID" ] && stop_group "$RVIZ_PID"
+  [ -n "$HEALTH_PID" ] && stop_group "$HEALTH_PID"
   if [ -n "$GAZEBO_PID" ]; then
     kill -TERM -"$GAZEBO_PID" 2>/dev/null || kill -TERM "$GAZEBO_PID" 2>/dev/null || true
     for _ in $(seq 1 20); do
@@ -148,9 +148,8 @@ shutdown() {
     wait "$GAZEBO_PID" 2>/dev/null || true
     say "      Gazebo stopped."
   fi
-  for p in $(pgrep -f "lunar_world.sdf" 2>/dev/null || true); do
-    kill -9 "$p" 2>/dev/null || true
-  done
+  # Only terminate this launcher's owned Gazebo process group. A broad
+  # world-name sweep here can kill a new run during overlapping teardown.
   echo "" >> "$LOG_FILE"
   echo "clean shutdown at $(date -u +%FT%TZ)" >> "$LOG_FILE"
   say "Launch D environment cleanly closed."
@@ -164,6 +163,7 @@ abort() {
   shutdown 1
 }
 trap 'shutdown 130' INT TERM
+trap 'shutdown $?' EXIT
 
 # ------------------------------------------------------------
 # Banner
@@ -183,7 +183,8 @@ echo "[1/14] Checking Phase A baseline + Phase D files....."
 missing=0
 for f in "$WORLD_PATH" "$MODEL_PATH" "$WASD_PATH" "$CONTROL_PATH" "$ODOM_PATH" "$SLAM_CONFIG" "$NAV_PATH" \
          "$RVIZ_CONFIG" "$WORLD_DIR/meshes/lunar_terrain.obj" \
-         "$WORLD_DIR/meshes/lunar_terrain_collision.obj"; do
+         "$WORLD_DIR/meshes/lunar_terrain_collision.obj" \
+         "$WORLD_DIR/meshes/lunar_terrain_mission_collision.obj"; do
   if [ ! -f "$f" ]; then
     say "      MISSING: $f"
     missing=1
@@ -260,7 +261,7 @@ if [ -n "$stale" ]; then
 fi
 # A prior interrupted `ros2 run` can leave its child bridge alive. Remove
 # only processes belonging to this Phase D command/node contract.
-for pattern in "ros_ign_bridge.*parameter_bridge" "ros_gz_bridge.*parameter_bridge" \
+for pattern in "scripts/health_monitor.py" "ros_ign_bridge.*parameter_bridge" "ros_gz_bridge.*parameter_bridge" \
                "scripts/control_odometry.py" "scripts/odometry_monitor.py" "scripts/astar_navigation.py" "slam_toolbox.*online_async"; do
   for p in $(pgrep -f "$pattern" 2>/dev/null || true); do
     kill -TERM "$p" 2>/dev/null || true
@@ -271,6 +272,8 @@ echo "      clean state: OK"
 log "[3/14] clean state OK"
 
 # ------------------------------------------------------------
+source "$REPO_DIR/scripts/prepare_safety_plugin.sh"
+
 # [4/14] Start Gazebo - same validated Phase A world
 # ------------------------------------------------------------
 echo "[4/14] Starting Gazebo lunar world.................."
@@ -313,6 +316,9 @@ log "[4/14] gazebo OK and unpaused (pid $GAZEBO_PID)"
 # [5/14] Spawn LunaBot V4
 # ------------------------------------------------------------
 echo "[5/14] Spawning LunaBot V4.........................."
+NAV_MODEL_PATH="$REPO_DIR/.build/phase_d_navigation/model.sdf"
+python3 "$REPO_DIR/tools/prepare_phase_d_model.py" "$MODEL_PATH" "$NAV_MODEL_PATH" || abort "Navigation model preparation failed"
+MODEL_PATH="$NAV_MODEL_PATH"
 spawn_resp="$(timeout 20 "$IGN" service -s "/world/$WORLD_NAME/create" \
   --reqtype "$MSGNS.EntityFactory" --reptype "$MSGNS.Boolean" \
   --timeout 15000 \
@@ -330,14 +336,16 @@ log "[5/14] spawn OK (z=$SPAWN_Z)"
 echo "[6/14] Starting ROS 2 <-> Gazebo bridge............."
 : > "$EVIDENCE_DIR/bridge.log"
 setsid ros2 run "$BRIDGE_PKG" parameter_bridge \
-  "/cmd_vel@geometry_msgs/msg/Twist]$MSGNS.Twist" \
+  "/lunabot/actuator_request@geometry_msgs/msg/Twist]$MSGNS.Twist" \
   "/clock@rosgraph_msgs/msg/Clock[$MSGNS.Clock" \
   "/lunabot/camera/image_raw@sensor_msgs/msg/Image[$MSGNS.Image" \
+  "/lunabot/camera/camera_info@sensor_msgs/msg/CameraInfo[$MSGNS.CameraInfo" \
   "/lunabot/depth/image_raw@sensor_msgs/msg/Image[$MSGNS.Image" \
+  "/lunabot/depth/camera_info@sensor_msgs/msg/CameraInfo[$MSGNS.CameraInfo" \
   "/lunabot/lidar/scan@sensor_msgs/msg/LaserScan[$MSGNS.LaserScan" \
   "/lunabot/imu@sensor_msgs/msg/Imu[$MSGNS.IMU" \
   "/lunabot/odom@nav_msgs/msg/Odometry[$MSGNS.Odometry" \
-  "/lunabot/joint_states@sensor_msgs/JointState[$MSGNS.Model" \
+  "/lunabot/joint_states@sensor_msgs/msg/JointState[$MSGNS.Model" \
   "/tf@tf2_msgs/msg/TFMessage[$MSGNS.Pose_V" \
   "/lunabot/steer/front_left@std_msgs/msg/Float64]$MSGNS.Double" \
   "/lunabot/steer/front_right@std_msgs/msg/Float64]$MSGNS.Double" \
@@ -345,6 +353,8 @@ setsid ros2 run "$BRIDGE_PKG" parameter_bridge \
   "/lunabot/steer/rear_right@std_msgs/msg/Float64]$MSGNS.Double" \
   "/lunabot/mast/pan@std_msgs/msg/Float64]$MSGNS.Double" \
   "/lunabot/mast/tilt@std_msgs/msg/Float64]$MSGNS.Double" \
+  "/lunabot/actuator_watchdog/state@std_msgs/msg/String[$MSGNS.StringMsg" \
+  --ros-args -r /lunabot/actuator_request:=/cmd_vel \
   >> "$EVIDENCE_DIR/bridge.log" 2>&1 &
 BRIDGE_PID=$!
 sleep 3
@@ -357,13 +367,17 @@ log "[6/14] bridge OK (pid $BRIDGE_PID)"
 # ------------------------------------------------------------
 echo "[7/14] Starting static TF (sensor frames)............"
 TF_SPECS=(
-  "chassis|sensor_head|0.18 0 0.85 0 0 0"
-  "sensor_head|rgb_camera|0.14 0 0 0 0 0"
-  "sensor_head|depth_camera|0.14 0 -0.04 0 0 0"
-  "sensor_head|lidar|0.02 0 0.09 0 0.5 0"
+  "sensor_head|rgb_camera|0.14 0 0 0 0.25 0"
+  "sensor_head|depth_camera|0.14 0 -0.04 0 0.25 0"
+  "sensor_head|lidar|0.35 0 -0.60 0 0 0"
   # Gazebo Fortress scopes the LaserScan frame in the message. Keep the
   # Phase B unscoped alias and add the exact frame used by slam_toolbox.
-  "sensor_head|lunabot_v4/sensor_head/lidar|0.02 0 0.09 0 0.5 0"
+  "sensor_head|lunabot_v4/sensor_head/lidar|0.35 0 -0.60 0 0 0"
+  # Scoped sensor headers and ROS optical camera axes.
+  "chassis|imu_link|0 0 0.10 0 0 0"
+  "imu_link|lunabot_v4/imu_link/imu|0 0 0 0 0 0"
+  "rgb_camera|lunabot_v4/sensor_head/rgb_camera|0 0 0 -1.5707963267948966 0 -1.5707963267948966"
+  "depth_camera|lunabot_v4/sensor_head/depth_camera|0 0 0 -1.5707963267948966 0 -1.5707963267948966"
 )
 for spec in "${TF_SPECS[@]}"; do
   IFS='|' read -r parent child xyzrpy <<< "$spec"
@@ -372,7 +386,12 @@ for spec in "${TF_SPECS[@]}"; do
     >> "$EVIDENCE_DIR/gazebo.log" 2>&1 &
   TF_PIDS+=("$!")
 done
-echo "      5 static transforms published (including scoped Gazebo LaserScan frame)"
+# Articulated mast transform follows measured joints, not a fixed neutral pose.
+setsid python3 "$REPO_DIR/scripts/sensor_mount_tf.py" \
+  >> "$EVIDENCE_DIR/gazebo.log" 2>&1 &
+TF_PIDS+=("$!")
+
+echo "      8 static transforms + dynamic mast published (including scoped Gazebo LaserScan frame)"
 log "[7/14] static TF OK"
 
 # ------------------------------------------------------------
@@ -380,8 +399,11 @@ log "[7/14] static TF OK"
 # ------------------------------------------------------------
 echo "[8/14] Starting Phase D control layer................"
 : > "$EVIDENCE_DIR/control.log"
+setsid python3 "$REPO_DIR/scripts/health_monitor.py" --require-map --path-topic /plan \
+  >> "$EVIDENCE_DIR/health.log" 2>&1 &
+HEALTH_PID=$!
 setsid python3 "$CONTROL_PATH" \
-  --input-topic /cmd_vel_in --output-topic /cmd_vel \
+  --input-topic /cmd_vel_in --output-topic /cmd_vel --require-map --path-topic /plan \
   --max-linear 0.45 --max-angular 1.0 \
   --max-linear-accel 0.4 --max-angular-accel 0.8 \
   --watchdog-sec 0.5 --rate 30 \
@@ -432,13 +454,16 @@ if [ "$EVIDENCE" = "1" ] && [ "$DEMO" = "1" ]; then
     > "$EVIDENCE_DIR/map_before_navigation.txt" || true
 fi
 setsid python3 "$NAV_PATH" --ros-args \
+  -p use_sim_time:=true \
   -p auto_goal:="$AUTO_GOAL" \
+  -p require_path_health:=true \
   -p map_topic:=/map -p goal_topic:=/goal_pose \
   -p path_topic:=/plan -p cmd_topic:=/cmd_vel_in \
   -p odom_topic:=/lunabot/odom \
   -p status_topic:=/lunabot/navigation/status \
   -p map_frame:=map -p unknown_is_obstacle:=true \
   -p inflation_radius:=0.25 -p auto_goal_distance:=1.5 \
+  -p max_linear:=0.08 -p max_angular:=0.30 \
   >> "$EVIDENCE_DIR/navigation.log" 2>&1 &
 NAV_PID=$!
 sleep 3
@@ -454,7 +479,7 @@ if [ "$HEADLESS" = "1" ]; then
   log "[12/14] rviz skipped (headless)"
 else
   echo "[12/14] Starting RViz2.............................."
-  setsid rviz2 -d "$RVIZ_CONFIG" -f map >> "$EVIDENCE_DIR/gazebo.log" 2>&1 &
+  setsid bash "$REPO_DIR/scripts/rviz-d.sh" >> "$EVIDENCE_DIR/gazebo.log" 2>&1 &
   RVIZ_PID=$!
   sleep 2
   if kill -0 "$RVIZ_PID" 2>/dev/null; then
@@ -524,15 +549,25 @@ type_ok() {
   return 1
 }
 
+# Startup authorization; never automatically clears a runtime health/stop latch.
+arm_startup() {
+  if ! python3 "$REPO_DIR/scripts/arm_safety.py" --timeout 60; then
+    echo "ERROR: safety startup arming failed"
+    shutdown 1
+  fi
+}
+if [ "$AUTO_GOAL" = "true" ] || [ "$AUTO_GOAL" = "1" ]; then arm_startup; fi
 topic_ok() {
   local sample=""
   local durability="volatile"
+  local reliability="reliable"
   case "$2" in
-    /map|/plan|/lunabot/navigation/status) durability="transient_local" ;;
+    /lunabot/odom|/lunabot/camera/image_raw|/lunabot/lidar/scan|/lunabot/imu) reliability="best_effort" ;;
+    /map|/plan|/lunabot/navigation/status) durability="transient_local"; reliability="reliable" ;;
   esac
   # Do not pipe to head: head can exit successfully before ros2 receives a
   # message, creating a false PASS. This assignment waits for --once data.
-  if sample="$(timeout 30 ros2 topic echo "$2" --qos-reliability best_effort \
+  if sample="$(timeout 30 ros2 topic echo "$2" --qos-reliability "$reliability" \
       --qos-durability "$durability" --once 2>/dev/null)" && [ -n "$sample" ]; then
     # /map must be an OccupancyGrid-shaped message, not merely any message.
     if [ "$2" = "/map" ] && { [[ "$sample" != *"info:"* ]] || [[ "$sample" != *"data:"* ]]; }; then
@@ -620,8 +655,13 @@ tf_ok "TF sensor_head -> scoped LaserScan frame" "sensor_head" "lunabot_v4/senso
 type_ok "type /goal_pose geometry_msgs/PoseStamped" "/goal_pose" "geometry_msgs/msg/PoseStamped"
 type_ok "type /plan nav_msgs/Path" "/plan" "nav_msgs/msg/Path"
 type_ok "type navigation status std_msgs/String" "/lunabot/navigation/status" "std_msgs/msg/String"
-topic_ok "topic /goal_pose"                    "/goal_pose"
-topic_ok "topic /plan"                         "/plan"
+if [ "$AUTO_GOAL" = "true" ] || [ "$AUTO_GOAL" = "1" ]; then
+  topic_ok "topic /goal_pose" "/goal_pose"
+  topic_ok "topic /plan" "/plan"
+else
+  echo "      goal/path acceptance: WAITING FOR MANUAL GOAL (not a startup failure)"
+  log "manual goal/path runtime acceptance pending"
+fi
 topic_ok "topic /lunabot/navigation/status"    "/lunabot/navigation/status"
 topic_ok "topic /cmd_vel_in"                  "/cmd_vel_in"
 if [ "$DEMO" = "1" ]; then
@@ -683,6 +723,7 @@ fi
 # ------------------------------------------------------------
 # [14/14] Status
 # ------------------------------------------------------------
+if [ "$AUTO_GOAL" != "true" ] && [ "$AUTO_GOAL" != "1" ]; then arm_startup; fi
 echo ""
 echo "------------------------------------------------------------"
 echo "PHASE STATUS"
@@ -697,7 +738,7 @@ echo "Watchdog          : RUNNING (0.5 s timeout)"
 echo "Odometry          : RUNNING (/lunabot/odom monitor)"
 echo "Sensors           : RUNNING (camera, depth, lidar, imu)"
 echo "Bridge            : RUNNING (16 mappings)"
-echo "TF                : RUNNING (odom->chassis + 5 static)"
+echo "TF                : RUNNING (odom->chassis + 8 static + dynamic mast)"
 printf "RViz2             : %s\n" "$( [ "$HEADLESS" = 1 ] && echo "skipped (headless)" || echo "RUNNING" )"
 echo ""
 echo "------------------------------------------------------------"

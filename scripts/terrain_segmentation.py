@@ -2,28 +2,20 @@
 """LunaBot V4 Phase E: lightweight RGB-D terrain segmentation.
 
 This node deliberately stays at the perception layer. It consumes the existing
-Gazebo RGB and depth camera topics and publishes a pixel-wise mask plus a
-visual overlay; it does not modify the map, planner, controller, or rover
-model. The first implementation is deterministic and dependency-light so it
-can run on the validated ROS 2 Humble workstation without cv_bridge or a
-machine-learning model.
+Gazebo RGB and depth camera topics and publishes the qualified P5-02 three-class
+mask plus a visual overlay; it does not modify the planner, controller, or rover
+model. The class IDs are regolith=0, rock=1, shadow=2, unknown=255.
 
-Mask labels are encoded as mono8 values:
-  0 = unknown / invalid depth
-  1 = traversable terrain candidate
-  2 = obstacle / non-ground candidate
-
-The lower camera field with valid depth is treated as terrain candidate, while
-valid returns above the configurable ground ROI are treated as obstacle
-candidate. Saturated RGB pixels in the ground ROI are conservatively marked as
-obstacles. This is an auditable baseline for Phase E; semantic terrain
-mapping and cost-map fusion are later phases.
+Mask labels are encoded as mono8 values: 0=regolith, 1=rock, 2=shadow,
+255=unknown. The runtime also publishes calibrated per-pixel confidence.
 """
 
 from __future__ import annotations
 
 import math
 import struct
+import os
+from pathlib import Path
 from typing import Optional
 
 import rclpy
@@ -34,9 +26,15 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
+from p502_threeclass_inference import P502ThreeClassRuntime
 
 
 UNKNOWN = 0
+REGOLITH = 0
+ROCK = 1
+SHADOW = 2
+UNKNOWN_ID = 255
+# IDs used only by the explicit no-model development fallback below.
 TERRAIN = 1
 OBSTACLE = 2
 
@@ -51,23 +49,31 @@ class TerrainSegmentation(Node):
         self.declare_parameter("mask_topic", "/lunabot/terrain/segmentation")
         self.declare_parameter("overlay_topic", "/lunabot/terrain/overlay")
         self.declare_parameter(
+            "confidence_topic", "/lunabot/terrain/segmentation_confidence")
+        self.declare_parameter(
             "status_topic", "/lunabot/terrain/segmentation/status")
         self.declare_parameter("ground_roi_start", 0.35)
         self.declare_parameter("max_depth", 8.0)
         self.declare_parameter("max_rate", 5.0)
         self.declare_parameter("saturation_threshold", 0.55)
+        self.declare_parameter("model_package", os.environ.get("P502_MODEL_PACKAGE", ""))
 
         get = self.get_parameter
         self.image_topic = str(get("image_topic").value)
         self.depth_topic = str(get("depth_topic").value)
         self.mask_topic = str(get("mask_topic").value)
         self.overlay_topic = str(get("overlay_topic").value)
+        self.confidence_topic = str(get("confidence_topic").value)
         self.status_topic = str(get("status_topic").value)
         self.ground_roi_start = max(0.0, min(1.0, float(get("ground_roi_start").value)))
         self.max_depth = max(0.1, float(get("max_depth").value))
         self.max_rate = max(0.1, float(get("max_rate").value))
         self.saturation_threshold = max(
             0.0, min(1.0, float(get("saturation_threshold").value)))
+        package = str(get("model_package").value).strip()
+        self.semantic_model = None
+        if package:
+            self.semantic_model = P502ThreeClassRuntime(Path(package))
 
         self.image_sub = self.create_subscription(
             Image, self.image_topic, self._image_callback, qos_profile_sensor_data)
@@ -78,6 +84,8 @@ class TerrainSegmentation(Node):
         image_qos.durability = DurabilityPolicy.VOLATILE
         self.mask_pub = self.create_publisher(Image, self.mask_topic, image_qos)
         self.overlay_pub = self.create_publisher(Image, self.overlay_topic, image_qos)
+        self.confidence_pub = self.create_publisher(
+            Image, self.confidence_topic, image_qos)
         status_qos = QoSProfile(depth=1)
         status_qos.reliability = ReliabilityPolicy.RELIABLE
         status_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
@@ -85,6 +93,7 @@ class TerrainSegmentation(Node):
             String, self.status_topic, status_qos)
 
         self.latest_image: Optional[Image] = None
+        self.latest_image_monotonic_s = 0.0
         self.latest_depth: Optional[Image] = None
         self.last_stamp_ns = 0
         self.last_process_ns = 0
@@ -99,6 +108,8 @@ class TerrainSegmentation(Node):
 
     def _image_callback(self, msg: Image) -> None:
         self.latest_image = msg
+        import time
+        self.latest_image_monotonic_s = time.monotonic()
 
     def _depth_callback(self, msg: Image) -> None:
         self.latest_depth = msg
@@ -128,6 +139,20 @@ class TerrainSegmentation(Node):
         if encoding.startswith("bgr"):
             return int(values[2]), int(values[1]), int(values[0])
         return int(values[0]), int(values[1]), int(values[2])
+
+    @classmethod
+    def _rgb_array(cls, msg: Image):
+        import numpy as np
+
+        encoding = cls._encoding_lower(msg)
+        channels = 4 if encoding in ("rgba8", "bgra8") else 3
+        if encoding not in ("rgb8", "bgr8", "rgba8", "bgra8"):
+            raise ValueError(f"Unsupported camera encoding for P5-02 model: {msg.encoding}")
+        rows = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.step)
+        pixels = rows[:, : msg.width * channels].reshape(msg.height, msg.width, channels)
+        if encoding.startswith("bgr"):
+            pixels = pixels[:, :, [2, 1, 0]]
+        return pixels[:, :, :3].copy()
 
     def _depth_at(self, msg: Image, x: int, y: int) -> float:
         encoding = self._encoding_lower(msg)
@@ -180,7 +205,55 @@ class TerrainSegmentation(Node):
         self.last_process_ns = now_ns
 
         width, height = int(image.width), int(image.height)
+        if self.semantic_model is not None:
+            try:
+                result = self.semantic_model.infer(
+                    self._rgb_array(image),
+                    captured_monotonic_s=self.latest_image_monotonic_s)
+            except (ValueError, RuntimeError) as exc:
+                self.publish_status(f"SEGMENTATION_MODEL_ERROR {exc}")
+                return
+            labels = result.labels
+            confidence_values = result.confidence
+            if result.stale or result.status.startswith("INVALID_"):
+                labels.fill(UNKNOWN_ID)
+                confidence_values.fill(0.0)
+            confidence = (confidence_values * 255.0).round().astype("uint8")
+            overlay = bytearray(width * height * 3)
+            counts = {REGOLITH: 0, ROCK: 0, SHADOW: 0}
+            colors = {REGOLITH: (40, 210, 60), ROCK: (235, 55, 45),
+                      SHADOW: (110, 90, 155)}
+            for y in range(height):
+                for x in range(width):
+                    label = int(labels[y, x])
+                    if label in counts:
+                        counts[label] += 1
+                        color = colors[label]
+                    else:
+                        color = (20, 20, 20)
+                    offset = (y * width + x) * 3
+                    overlay[offset:offset + 3] = bytes(color)
+            self.mask_pub.publish(self._make_image(
+                image.header, width, height, "mono8", width, labels.tobytes()))
+            self.confidence_pub.publish(self._make_image(
+                image.header, width, height, "mono8", width, confidence.tobytes()))
+            self.overlay_pub.publish(self._make_image(
+                image.header, width, height, "rgb8", width * 3, bytes(overlay)))
+            self.frame_count += 1
+            unknown_count = width * height - sum(counts.values())
+            self.publish_status(
+                f"SEGMENTATION_PASS mode=three_class frames={self.frame_count} "
+                f"provider={result.provider} latency_ms={result.latency_ms:.1f} "
+                f"input_age_ms={result.input_age_ms:.1f} "
+                f"regolith={counts[REGOLITH]} rock={counts[ROCK]} "
+                f"shadow={counts[SHADOW]} unknown={unknown_count}")
+            return
+
+        # Keep the dependency-light rule segmenter available for isolated node
+        # development; Phase L always supplies the qualified model package.
+        from semantic_layers import decision_strength
         mask = bytearray(width * height)
+        confidence = bytearray(width * height)
         overlay = bytearray(width * height * 3)
         terrain_count = 0
         obstacle_count = 0
@@ -198,6 +271,18 @@ class TerrainSegmentation(Node):
                     red, green, blue = self._rgb_at(image, x, y)
                     luminance = max(red, green, blue) / 255.0
                     saturation = (max(red, green, blue) - min(red, green, blue)) / 255.0
+                    row_fraction = y / max(1, height - 1)
+                    roi_margin = ((row_fraction - self.ground_roi_start)
+                                  / max(1e-6, 1.0 - self.ground_roi_start)
+                                  if lower_roi else
+                                  (self.ground_roi_start - row_fraction)
+                                  / max(1e-6, self.ground_roi_start))
+                    saturation_margin = abs(saturation - self.saturation_threshold) / max(
+                        1e-6, self.saturation_threshold, 1.0 - self.saturation_threshold)
+                    brightness_margin = abs(luminance - 0.98) / 0.98
+                    confidence[y * width + x] = int(round(255 * decision_strength(
+                        roi_margin=roi_margin,
+                        appearance_margin=max(saturation_margin, brightness_margin))))
                     # Lunar terrain is expected to be a low-saturation return in
                     # the lower field. Bright or saturated returns are treated
                     # conservatively as obstacle candidates.
@@ -219,6 +304,8 @@ class TerrainSegmentation(Node):
         header = image.header
         self.mask_pub.publish(self._make_image(
             header, width, height, "mono8", width, bytes(mask)))
+        self.confidence_pub.publish(self._make_image(
+            header, width, height, "mono8", width, bytes(confidence)))
         self.overlay_pub.publish(self._make_image(
             header, width, height, "rgb8", width * 3, bytes(overlay)))
         self.frame_count += 1
@@ -237,9 +324,13 @@ def main(args=None) -> None:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except Exception:
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

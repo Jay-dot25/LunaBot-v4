@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lunabot.invalid/schemas/p10-report-v1.json",
+  "title": "LunaBot P10 evaluation report",
+  "type": "object",
+  "required": ["schema_version", "report_id", "generated_utc", "result", "metric_catalog_sha256", "inputs", "trial_summary", "metrics", "plots", "limitations"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "report_id": {"type": "string", "minLength": 1},
+    "generated_utc": {"type": "string", "format": "date-time"},
+    "result": {"enum": ["COMPLETE_WITH_LIMITATIONS", "INCOMPLETE"]},
+    "metric_catalog_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "inputs": {"type": "array", "minItems": 4, "items": {"type": "object", "required": ["path", "sha256"], "properties": {"path": {"type": "string"}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}},
+    "trial_summary": {"type": "object", "required": ["p10_scenario_count", "p10_attempt_count", "p10_all_attempts_retained", "p8_live_roundtrips", "p8_live_legs", "p8_durable_deliveries"]},
+    "metrics": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["id", "status", "value", "unavailable_reason", "source_paths", "limitations"], "properties": {"id": {"type": "string"}, "status": {"enum": ["reported", "limited", "unavailable"]}, "value": {}, "unavailable_reason": {"type": ["string", "null"]}, "source_paths": {"type": "array", "items": {"type": "string"}}, "limitations": {"type": "array", "items": {"type": "string"}}}}},
+    "plots": {"type": "array", "items": {"type": "string"}},
+    "limitations": {"type": "array", "items": {"type": "string"}}
+  }
+}
