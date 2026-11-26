@@ -44,7 +44,8 @@ def fuse_terrain_costs(semantic: list[int] | tuple[int, ...], *,
                        terrain_cost: int = 20, unknown_cost: int = 80,
                        obstacle_cost: int = 100,
                        weights: tuple[float, float, float, float] =
-                       (0.25, 0.20, 0.35, 0.20)) -> list[int]:
+                       (0.25, 0.20, 0.35, 0.20),
+                       preserve_unknown: bool = False) -> list[int]:
     """Fuse aligned risk scores; semantic unknown/shadow never becomes obstacle."""
     size = len(semantic)
     layers = (slope, roughness, crater_risk, uncertainty)
@@ -64,8 +65,10 @@ def fuse_terrain_costs(semantic: list[int] | tuple[int, ...], *,
             output.append(int(obstacle_cost))
             continue
         if value <= 0:
-            # -1 and 0 (unknown/shadow) are caution, never hard obstacles.
-            output.append(int(unknown_cost))
+            # The planner can apply unknown_cost to -1 cells. Optionally keep
+            # unknown visibly distinct in the published map instead of painting
+            # the whole unobserved window as a uniform caution-cost sheet.
+            output.append(-1 if preserve_unknown else int(unknown_cost))
             continue
         risks = [max(0, min(100, int(layer[index]))) for layer in layers]
         risk = sum(weight * risk_value for weight, risk_value in zip(normalized, risks))

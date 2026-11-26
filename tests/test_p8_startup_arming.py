@@ -2,13 +2,17 @@
 import sys
 import time
 import unittest
+from concurrent.futures import Future
+from itertools import count
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import rclpy
 from geometry_msgs.msg import Twist
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import arm_safety
 from control_odometry import ControlNode
 
 
@@ -53,6 +57,30 @@ class StartupArmingTests(unittest.TestCase):
         self.node._input_cb(Twist())
         self.node._tick()
         self.assertEqual(self.node.fault, "HEALTH_ACTUATOR_TIMEOUT_LATCHED")
+
+
+class StartupArmingClientTests(unittest.TestCase):
+    def test_retries_when_the_first_service_response_is_lost(self):
+        lost = Future()
+        acknowledged = Future()
+        acknowledged.set_result(SimpleNamespace(success=True, message="Already armed"))
+        with (
+            patch.object(arm_safety, "Node") as node_factory,
+            patch.object(arm_safety, "rclpy") as ros,
+            patch.object(arm_safety.time, "monotonic", side_effect=count(step=0.25)),
+            patch.object(sys, "argv", ["arm_safety.py", "--timeout", "10"]),
+        ):
+            client = node_factory.return_value.create_client.return_value
+            client.service_is_ready.return_value = True
+            client.call_async.side_effect = [lost, acknowledged]
+            ros.ok.return_value = True
+
+            with self.assertRaises(SystemExit) as exit_context:
+                arm_safety.main()
+
+            self.assertEqual(exit_context.exception.code, 0)
+            self.assertEqual(client.call_async.call_count, 2)
+            client.remove_pending_request.assert_called_once_with(lost)
 
 
 if __name__ == "__main__":

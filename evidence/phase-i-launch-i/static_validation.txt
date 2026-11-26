@@ -96,7 +96,7 @@
 [PASS] world SDF well-formed
 [PASS] model SDF well-formed
 [PASS] approved baseline remains green: tools/validate_phase_a.py - ==
-RESULT: 80/80 checks passed - ALL PASS
+RESULT: 96/96 checks passed - ALL PASS
 ============================================================
 report: /home/jay/lunabot-v4/evidence/phase-a-launch-a/static_validation.txt
 [PASS] approved baseline remains green: tools/validate_phase_b.py - RESULT: 103/103 checks passed - ALL PASS

@@ -10,9 +10,11 @@ path-planning contract is independently validated.
 from __future__ import annotations
 
 import math
+import time
 from typing import Optional
 
 import rclpy
+from rclpy.clock import Clock, ClockType
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from rclpy.duration import Duration
@@ -48,6 +50,8 @@ class TerrainAwarePlanner(Node):
         self.declare_parameter("cost_weight", 2.0)
         self.declare_parameter("unknown_cost", 80)
         self.declare_parameter("unknown_is_blocked", False)
+        self.declare_parameter("goal_snap_radius", 0.80)
+        self.declare_parameter("start_escape_radius", 1.50)
         self.declare_parameter("replan_period", 1.0)
 
         get = self.get_parameter
@@ -70,6 +74,13 @@ class TerrainAwarePlanner(Node):
         self.unknown_cost = max(0, min(self.blocked_cost - 1,
                                        int(get("unknown_cost").value)))
         self.unknown_is_blocked = bool(get("unknown_is_blocked").value)
+        self.goal_snap_radius = max(0.0, float(get("goal_snap_radius").value))
+        if not math.isfinite(self.goal_snap_radius):
+            raise ValueError("goal_snap_radius must be finite")
+        self.start_escape_radius = max(
+            0.0, float(get("start_escape_radius").value))
+        if not math.isfinite(self.start_escape_radius):
+            raise ValueError("start_escape_radius must be finite")
         self.replan_period = max(0.2, float(get("replan_period").value))
 
         map_qos = QoSProfile(depth=1)
@@ -102,10 +113,10 @@ class TerrainAwarePlanner(Node):
         # Simulation time starts at zero; subtracting a warm-up duration can
         # produce a negative rclpy Time. The first timer tick will plan after
         # the configured replan period instead.
-        self.last_plan_time = self.get_clock().now()
+        self.last_plan_time = time.monotonic()
         self.last_status = ""
         self.publish_status("TERRAIN_PLANNER_WAITING_FOR_COST_MAP")
-        self.timer = self.create_timer(0.1, self._tick)
+        self.timer = self.create_timer(0.1, self._tick, clock=Clock(clock_type=ClockType.STEADY_TIME))
 
     def publish_status(self, text: str) -> None:
         if text == self.last_status:
@@ -306,6 +317,95 @@ class TerrainAwarePlanner(Node):
             cost_weight=self.cost_weight, blocked_cost=self.blocked_cost,
             unknown_cost=self.unknown_cost, unknown_is_blocked=self.unknown_is_blocked)
 
+    def _safe_goal_path(self, start_cell, blocked_goal_cell):
+        """Find the nearest reachable, traversable endpoint near a blocked goal."""
+        if self.goal_snap_radius <= 0.0:
+            return None
+        resolution = float(self.cost_map.info.resolution)
+        max_cells = int(math.ceil(self.goal_snap_radius / resolution))
+        goal_x, goal_y = blocked_goal_cell
+        candidates = []
+        for dy in range(-max_cells, max_cells + 1):
+            for dx in range(-max_cells, max_cells + 1):
+                distance = math.hypot(dx, dy) * resolution
+                if distance > self.goal_snap_radius:
+                    continue
+                cell = (goal_x + dx, goal_y + dy)
+                if cell == start_cell or self._cell_cost(cell) is None:
+                    continue
+                candidates.append((distance, cell))
+        for distance, cell in sorted(candidates, key=lambda item: item[0]):
+            cells, total_cost = self._weighted_astar(start_cell, cell)
+            if cells:
+                return cell, cells, total_cost, distance
+        return None
+
+    def _safe_start_cells(self, blocked_start_cell):
+        """Find nearby free cells when only the inflated rover cell is blocked."""
+        if self.start_escape_radius <= 0.0:
+            return []
+        resolution = float(self.cost_map.info.resolution)
+        max_cells = int(math.ceil(self.start_escape_radius / resolution))
+        start_x, start_y = blocked_start_cell
+        candidates = []
+        for dy in range(-max_cells, max_cells + 1):
+            for dx in range(-max_cells, max_cells + 1):
+                distance = math.hypot(dx, dy) * resolution
+                if distance <= self.start_escape_radius:
+                    cell = (start_x + dx, start_y + dy)
+                    if self._cell_cost(cell) is not None:
+                        candidates.append((distance, cell))
+        return [cell for _, cell in sorted(candidates, key=lambda item: item[0])]
+
+    def _segment_clear_of_obstacles(self, start_xy, end_xy) -> bool:
+        """Match the follower's raw-LiDAR clearance check for start escapes."""
+        grid = self.obstacle_map
+        if grid is None:
+            return True
+        info = grid.info
+        origin = info.origin
+        effective_clearance = (
+            self.obstacle_inflation + math.sqrt(2.0) * info.resolution)
+        q = info.origin.orientation
+        obstacle_yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                                  1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        occupied = []
+        for index, value in enumerate(grid.data):
+            if value < self.obstacle_threshold:
+                continue
+            gx, gy = index % info.width, index // info.width
+            lx, ly = (gx + 0.5) * info.resolution, (gy + 0.5) * info.resolution
+            occupied.append((
+                origin.position.x + math.cos(obstacle_yaw) * lx - math.sin(obstacle_yaw) * ly,
+                origin.position.y + math.sin(obstacle_yaw) * lx + math.cos(obstacle_yaw) * ly))
+        if not occupied:
+            return True
+
+        def clearance(point) -> float:
+            return min(math.hypot(point[0] - ox, point[1] - oy)
+                       for ox, oy in occupied)
+
+        step = max(0.02, info.resolution * 0.5)
+        distance = math.hypot(end_xy[0] - start_xy[0], end_xy[1] - start_xy[1])
+        samples = max(1, int(math.ceil(distance / step)))
+        initial_clearance = clearance(start_xy)
+        escaping_existing_clearance = initial_clearance < effective_clearance
+        previous_clearance = initial_clearance
+        for sample in range(samples + 1):
+            fraction = sample / samples
+            x = start_xy[0] + fraction * (end_xy[0] - start_xy[0])
+            y = start_xy[1] + fraction * (end_xy[1] - start_xy[1])
+            current_clearance = clearance((x, y))
+            if escaping_existing_clearance:
+                if current_clearance + 0.02 < previous_clearance:
+                    return False
+                if current_clearance >= effective_clearance:
+                    escaping_existing_clearance = False
+            elif current_clearance < effective_clearance:
+                return False
+            previous_clearance = current_clearance
+        return True
+
     def _invalidate_plan(self, reason: str, *, reset_revision: bool = True) -> None:
         self.last_plan_world = []
         path = Path()
@@ -338,28 +438,69 @@ class TerrainAwarePlanner(Node):
             return
         start_cost = self._cell_cost(start_cell)
         goal_cost = self._cell_cost(goal_cell)
-        if start_cost is None or goal_cost is None:
+        if start_cost is not None:
+            start_candidates = [start_cell]
+        else:
+            start_candidates = self._safe_start_cells(start_cell)
+        if not start_candidates:
             start_raw = (self.planning_data[start_cell[1] * int(self.cost_map.info.width)
                                            + start_cell[0]]
                          if 0 <= start_cell[0] < int(self.cost_map.info.width)
                          and 0 <= start_cell[1] < int(self.cost_map.info.height)
                          else "OUT_OF_BOUNDS")
-            goal_raw = (self.planning_data[goal_cell[1] * int(self.cost_map.info.width)
-                                          + goal_cell[0]]
-                        if 0 <= goal_cell[0] < int(self.cost_map.info.width)
-                        and 0 <= goal_cell[1] < int(self.cost_map.info.height)
-                        else "OUT_OF_BOUNDS")
             self._invalidate_plan("OCCUPANCY_CONSTRAINT", reset_revision=False)
             self.publish_status(
-                f"TERRAIN_PLANNER_OCCUPANCY_CONSTRAINT start={start_cell} goal={goal_cell} "
-                f"start_cost={start_cost if start_cost is not None else start_raw} "
-                f"goal_cost={goal_cost if goal_cost is not None else goal_raw} "
+                f"TERRAIN_PLANNER_START_OCCUPIED_NO_CLEAR_ESCAPE "
+                f"start={start_cell} start_cost={start_raw} goal={goal_cell} "
                 f"revision={self.cost_revision[:12]}")
             return
-        cells, total_cost = self._weighted_astar(start_cell, goal_cell)
+        safe_approach_offset = 0.0
+        start_escape_offset = 0.0
+        clear_start_escape_found = start_cost is not None
+        cells, total_cost = [], math.inf
+        for candidate_start in start_candidates:
+            start_escape_offset = math.hypot(
+                candidate_start[0] - start_cell[0],
+                candidate_start[1] - start_cell[1]) * float(self.cost_map.info.resolution)
+            if (start_cost is None and not self._segment_clear_of_obstacles(
+                    (current_x, current_y), self._grid_to_world(candidate_start))):
+                continue
+            clear_start_escape_found = True
+            if goal_cost is None:
+                safe_approach = self._safe_goal_path(candidate_start, goal_cell)
+                if safe_approach is None:
+                    continue
+                candidate_goal, candidate_cells, candidate_cost, offset = safe_approach
+            else:
+                candidate_goal = goal_cell
+                candidate_cells, candidate_cost = self._weighted_astar(
+                    candidate_start, candidate_goal)
+                offset = 0.0
+            if candidate_cells:
+                goal_cell = candidate_goal
+                cells, total_cost = candidate_cells, candidate_cost
+                safe_approach_offset = offset
+                break
         if not cells:
-            self._invalidate_plan("NO_PATH", reset_revision=False)
-            self.publish_status("TERRAIN_PLANNER_NO_PATH")
+            if start_cost is None and not clear_start_escape_found:
+                self._invalidate_plan("START_OCCUPIED_NO_CLEAR_ESCAPE",
+                                      reset_revision=False)
+                self.publish_status(
+                    f"TERRAIN_PLANNER_START_OCCUPIED_NO_CLEAR_ESCAPE "
+                    f"start={start_cell} goal={goal_cell} "
+                    f"start_escape_radius={self.start_escape_radius:.2f} "
+                    f"revision={self.cost_revision[:12]}")
+            elif goal_cost is None:
+                self._invalidate_plan("GOAL_OCCUPIED_NO_SAFE_APPROACH",
+                                      reset_revision=False)
+                self.publish_status(
+                    f"TERRAIN_PLANNER_GOAL_OCCUPIED_NO_SAFE_APPROACH "
+                    f"start={start_cell} goal={goal_cell} "
+                    f"goal_snap_radius={self.goal_snap_radius:.2f} "
+                    f"revision={self.cost_revision[:12]}")
+            else:
+                self._invalidate_plan("NO_PATH", reset_revision=False)
+                self.publish_status("TERRAIN_PLANNER_NO_PATH")
             return
         path = Path()
         path.header.frame_id = self.map_frame
@@ -380,21 +521,22 @@ class TerrainAwarePlanner(Node):
             path.poses.append(pose)
         self.plan_pub.publish(path)
         self.last_plan_world = [self._grid_to_world(cell) for cell in cells]
-        self.last_plan_time = self.get_clock().now()
         self.planned_revision = self.cost_revision
         self.plan_requested = False
         self.publish_status(
             f"TERRAIN_PLAN_PASS cells={len(cells)} weighted_cost={total_cost:.2f} "
+            f"start_escape_offset={start_escape_offset:.2f} "
+            f"safe_approach_offset={safe_approach_offset:.2f} "
             f"frame={self.map_frame} cost_weight={self.cost_weight:.2f} "
             f"map_revision={self.cost_revision}")
 
     def _tick(self) -> None:
+        now = time.monotonic()
         revision_changed = self.cost_revision != self.planned_revision
         if (not self.plan_requested and not revision_changed
-                and (self.get_clock().now() - self.last_plan_time).nanoseconds
-                < int(self.replan_period * 1e9)):
+                and now - self.last_plan_time < self.replan_period):
             return
-        self.last_plan_time = self.get_clock().now()
+        self.last_plan_time = now
         self.planned_revision = self.cost_revision
         self.plan_requested = False
         self._plan()

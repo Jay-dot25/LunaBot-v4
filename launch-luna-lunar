@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Interactive Phase L run using the lunar-inspired rover visual variant.
+set -eu
+script_path="$(readlink -f -- "${BASH_SOURCE[0]}")"
+repo="$(cd "$(dirname "$script_path")" && pwd)"
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
+export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+export EVIDENCE_DIR="${EVIDENCE_DIR:-$repo/evidence/runs/$(date +%Y%m%d-%H%M%S)-phase-l-lunar-design-$$}"
+export ROVER_MODEL_OVERRIDE="$repo/src/lunabot_gazebo/models/lunabot_lunar_design/model.sdf"
+export ROVER_MODEL_LABEL="LunaBot V4 Lunar Design"
+export RGB_CAMERA_POSE="0.270 0.092 0.034 0 0.25 0"
+export DEPTH_CAMERA_POSE="0.270 -0.092 0.034 0 0.25 0"
+export HEADLESS=0 GAZEBO_SERVER_ONLY=1 DEMO=0 FINAL_DEMO=0 PRESENTATION_FAST=1
+export WSL_SOFTWARE_PROFILE="${WSL_SOFTWARE_PROFILE:-1}"
+export RETAIN_RUNTIME_GATES_BETWEEN_GOALS=true
+export AUTO_GOAL=false REQUIRE_MANUAL_GOAL=true EVIDENCE=1 P8_ROUNDTRIP=0
+echo "Lunar-design rover evidence: $EVIDENCE_DIR"
+exec bash "$repo/scripts/launch-l.sh"

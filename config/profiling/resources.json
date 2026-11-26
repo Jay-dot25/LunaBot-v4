@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "profile_id": "wsl2-jay-desktop-20261114",
-  "status": "PROVISIONAL_ENVIRONMENT_BASELINE",
+  "profile_id": "wsl2-hpvictus15-20261117-v1",
+  "status": "FROZEN_FOR_ACCEPTANCE",
   "environment": {
     "os": "Ubuntu 22.04 under WSL2",
     "logical_cpu_count": 8,
@@ -19,9 +19,9 @@
     "host_os_version": "Windows 10.0.26340.0",
     "host_logical_cpu_count": 12,
     "host_primary_display_px": [1536, 864],
-    "host_display_scaling_percent": null,
+    "host_display_scaling_percent": 125,
     "host_gpu_driver_version": "621.14",
-    "host_inventory_note": "The target HP Victus 15 CPU, 8 GiB RAM, RTX 3050 Laptop GPU/4 GiB VRAM, and planned 5 GiB WSL allocation are documented in the user-supplied laptop plan PDF. Windows display, runtime version, logical CPU count, and NVIDIA driver were read in the prior inventory. CIM inventory and WSL launch are currently denied; Ubuntu/WSL resource figures above remain a provisional runtime profile and have not been revalidated."
+    "host_inventory_note": "Windows registry reports HP / Victus by HP Gaming Laptop 15-fb0xxx, AMD Ryzen 5 5600H, and NVIDIA GeForce RTX 3050 Laptop GPU with 4096 MiB and driver 621.14. .NET reports 7,883,206,656 bytes available to the OS; Windows version 10.0.26340, 12 logical CPUs, primary display 1536x864, and 125% scaling were read in this session. This matches the documented HP Victus 15 target family. WSL reports 8 logical CPUs and 4920 MiB RAM; this is the runtime profile measured for the acceptance runs. Simulator results remain WSL software-rendered measurements and do not qualify a physical rover."
   },
   "sampling": {
     "default_duration_seconds": 300,
@@ -44,12 +44,18 @@
     "dashboard_control_gateway.py",
     "slam_toolbox"
   ],
+  "freeze_record": {
+    "frozen_on": "2026-11-17",
+    "basis": "Engineering limits derived from the documented HP Victus 15 capacity before acceptance trials; these are project acceptance thresholds, not manufacturer specifications.",
+    "runtime_profile_caveat": "The host is identified as Victus by HP Gaming Laptop 15-fb0xxx with Ryzen 5 5600H, RTX 3050 Laptop GPU, and 7,883,206,656 bytes reported by Windows. The WSL runtime was measured at 8 logical CPUs and 4920 MiB RAM. Native target-size GUI acceptance still needs resource/render samples from the complete six-view workload at the application viewport size.",
+    "headroom": "Stack RSS is capped at 3500 MiB against 5 GiB planned WSL RAM, leaving about 1.5 GiB for ROS/WSL overhead. GPU use is capped at 3072 MiB against 4096 MiB, leaving 1 GiB. Stack CPU is capped at 65% of the 12-thread host (7.8 thread-equivalents), below the planned 8-CPU WSL ceiling."
+  },
   "limits": {
-    "stack_cpu_percent_of_host": null,
-    "stack_rss_mib": null,
-    "gpu_vram_mib": null,
-    "rtf_min": null,
-    "latency_p95_ms": null,
-    "state": "PENDING_APPROVED_ACCEPTANCE_LIMITS_AND_P9_03_GUI_BENCHMARK"
+    "stack_cpu_percent_of_host": 65.0,
+    "stack_rss_mib": 3500.0,
+    "gpu_vram_mib": 3072.0,
+    "rtf_min": 0.5,
+    "latency_p95_ms": 100.0,
+    "state": "FROZEN_BEFORE_ACCEPTANCE_MEASUREMENTS"
   }
 }

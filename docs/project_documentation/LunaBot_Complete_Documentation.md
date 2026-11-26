@@ -1,0 +1,231 @@
+# LunaBot V4: Complete Technical Documentation
+
+**Evidence cut-off:** repository state inspected 19 November 2026. **System class:** ROS 2 / Gazebo lunar-rover research simulation. This is a source- and evidence-based description; proposed functions are marked as such. The companion files in this folder provide the architecture, experiments, paper, presentation, report, image catalog and references.
+
+## 1. Executive summary and project definition
+
+LunaBot V4 is a simulated autonomous rover stack developed in incremental A–L phases. It combines a Gazebo Sim lunar-like environment and articulated six-wheel rover with ROS 2 Humble sensor bridges, wheel odometry, `slam_toolbox`, semantic RGB-D perception, elevation-derived terrain-risk layers, LiDAR obstacle overlays, cost-aware grid planning, a path follower, a command safety boundary, evaluation and a mission lifecycle supervisor. It addresses a robotics research/education problem: how to connect perception, mapping, planning, motion, safety and evidence into an inspectable end-to-end autonomous navigation system under a lunar-surface scenario.
+
+The project's defensible contribution is the integrated, staged engineering implementation and its explicit interfaces, safety gates and evidence trail—not invention of A*, SLAM, CNN segmentation or ROS/Gazebo. Several capabilities are validated only in simulation, fixtures or narrow benchmark conditions. The system is not flight-qualified, has no flight hardware, and does not physically collect samples. Current source and phase history live in `README.md`, `docs/`, `scripts/`, `src/`, `config/`, `tests/` and `evidence/`.
+
+### Status vocabulary
+
+| Label | Meaning |
+|---|---|
+| Implemented and validated | Source exists and a named test/evidence run exercised the stated scope. |
+| Implemented, limited validation | Present and exercised, but only under a restricted simulation, fixture, dataset or route scope. |
+| Implemented, unverified in claimed scope | Code exists; the corresponding end-to-end result is absent or pending. |
+| Planned/recommended | Roadmap only; do not present as current behavior. |
+
+## 2. Motivation, objectives, requirements and mission
+
+Planetary rovers operate without terrestrial GPS and face uncertain terrain, communication delay, and constrained energy, compute and mobility. Autonomous navigation can reduce operator workload and let a rover safely traverse between science targets. LunaBot is a ground-based simulation and student research platform for investigating those software interactions; lunar relevance is a scenario motivation, not proof of lunar-ready mechanics or environmental fidelity.
+
+**Objectives evidenced by code:** (1) provide a configurable articulated rover and procedural lunar terrain in Gazebo; (2) publish camera, depth, LiDAR, IMU and odometry into ROS; (3) build maps and estimate map-relative pose with LiDAR SLAM; (4) detect semantic/geometry risk and LiDAR obstacles; (5) plan routes over occupancy and terrain costs, replan when a sensed obstacle changes route feasibility, and follow paths through a bounded command interface; (6) expose a mission state and auditable results; (7) support GUI demonstration and headless reproducible qualification.
+
+**Assumptions:** ROS 2 Humble/Linux workstation and compatible Gazebo Sim; simulated calibrated sensor geometry; known ROS frame conventions; a traversable connected portion of the map; no real lunar communications/thermal/vacuum/radiation model; operators select goals in the GUI presentation mode. Flight-like resource and fault budgets are not established.
+
+**Illustrative mission:** an operator selects a map-frame science waypoint in RViz. The rover acquires RGB, depth, scan, IMU and odometry. `slam_toolbox` updates `/map` and `map→odom`; the semantic mapper projects class and depth information into map-aligned semantic, slope, roughness, crater-risk and uncertainty grids. LiDAR obstacle detection independently marks close returns. The cost mapper combines traversability/risk with obstacle cells; weighted A* selects a route and republishes it after changed map input. A follower checks path freshness, obstacle clearance and (in Phase L) mission state, then sends bounded velocity requests to `/cmd_vel_in`. The ROS safety controller and native Gazebo watchdog enforce command limits/timeouts before DiffDrive. The supervisor completes only after its map, goal, plan, replan, goal and evaluation evidence conditions hold. A real science sample instrument/manipulator and sample collection are absent; “sample delivery” in P8 is a software lifecycle event.
+
+## 3. Novelty and contribution assessment
+
+### Actual contributions
+
+1. A maintained phase-gated A–L integration path that retains independent launch entry points and phase-specific qualification records.
+2. A single velocity-command authority, with clamping/rate constraints, health checks, an emergency-stop latch and an independent native actuator watchdog, instead of allowing planners to publish directly to the Gazebo actuator.
+3. A data path that combines learned RGB terrain classes, calibrated RGB-D projection and geometry risk layers with occupancy and real simulated LiDAR obstacle cells.
+4. A safety-oriented dynamic replanning integration: invalidated routes cause a stop while a changed route is requested, and mission completion is tied to explicit evidence/events.
+5. A provenance-rich evaluation setup that distinguishes deterministic planner fixtures, perception held-out evaluation and live Gazebo trials rather than treating them as interchangeable evidence.
+
+These are integration and engineering contributions in this project. A*, weighted A*, `slam_toolbox`, CNN training/inference, ROS 2, Gazebo and the underlying sensor simulation are established tools/capabilities. The project does not demonstrate an algorithmic improvement over flight rover systems or a validated lunar performance advantage. Terrain costs are heuristic/configurable risk scores; they are not a calibrated mechanical safety model.
+
+### Comparison framing and research opportunity
+
+NASA rover autonomy uses flight-specific sensing, operational constraints and fault management. Curiosity uses stereo terrain assessment and combines inertial measurements with wheel motion, with visual odometry and human-supervised operations ([JPL MSL navigation](https://www-robotics.jpl.nasa.gov/what-we-do/flight-projects/mars-science-laboratory/surface-system-software-and-rover-navigation/)); Perseverance AutoNav builds 3D hazard maps and plans around obstacles, with route waypoints selected by the rover team ([NASA AutoNav overview](https://www.nasa.gov/solar-system/nasas-self-driving-perseverance-mars-rover-takes-the-wheel/)); VIPER's published design emphasized stereo vision, lighting, short waypoint operations and lunar-polar conditions ([NASA NTRS technical briefing](https://ntrs.nasa.gov/api/citations/20230008814/downloads/TI-VIPER-Tech.pdf)). LunaBot's differentiator is a transparent ROS/Gazebo student stack and integrated RGB-D semantic/geometry map, not equivalent mission capability. See `references.md`.
+
+Potential publishable directions: compare semantic+geometric traversability with occupancy-only planning on held-out seeded terrain; measure calibrated projection/terrain-risk error and route-level safety; test uncertainty-aware risk fusion; quantify end-to-end perception-to-stop latency and clearance; study robustness under sensor dropout and slip; validate transfer on a physical rover. A claim requires frozen protocols, sufficient independent trials, measured baselines and reproducible artifacts.
+
+## 4. Architecture and ROS graph
+
+See [LunaBot_Architecture.md](LunaBot_Architecture.md) for the detailed data flow, phase map, topics and interface ownership. Core path:
+
+```mermaid
+flowchart LR
+ M[Mission goal / RViz PoseStamped] --> P[Weighted terrain A*]
+ S[Gazebo sensors] --> B[ROS-Gazebo bridge]
+ B --> L[slam_toolbox: scan + odom]
+ L --> O[/map and map→odom/]
+ B --> D[RGB-D semantic + geometry mapper]
+ B --> X[LiDAR obstacle detector]
+ O --> C[Terrain cost fusion]
+ D --> C
+ X --> C
+ C --> P
+ P --> F[Terrain path follower]
+ X --> F
+ F -->|/cmd_vel_in| Q[ROS safety controller]
+ Q -->|/cmd_vel| W[Native watchdog]
+ W --> G[Gazebo DiffDrive]
+ G --> B
+ P --> E[Mission / evaluation evidence]
+```
+
+Main ROS interfaces use standard ROS messages: `sensor_msgs/Image`, `CameraInfo`, `LaserScan`, `Imu`, `JointState`; `nav_msgs/Odometry`, `OccupancyGrid`, `Path`; `geometry_msgs/PoseStamped`, `Twist`; `std_msgs/String`; `visualization_msgs/Marker`. `/lunabot/mission/command` is a string command interface rather than a ROS action; do not describe it as an action server. Mission events are journaled in SQLite. `/goal_pose` is the goal input. ROS package manifests are in `src/lunabot_*`; most autonomy algorithms are Python scripts, not separate ROS packages.
+
+### Frames
+
+Qualified ownership is `map → odom` by `slam_toolbox`, `odom → chassis` by Gazebo DiffDrive, and chassis-to-sensor transforms by static mounts plus the mast transform publisher driven by measured joint states. Scoped camera frame names use optical convention (z forward, x right, y down); LiDAR and IMU frames use mechanical axes. Sensor head rest offset is documented as `(0.18, 0, 0.85) m`; IMU mount is 0.10 m above chassis. See `docs/sensor-contracts.md`; a TF dump is retained in run evidence. TF frames do not imply physical calibration.
+
+## 5. Rover mechanical model
+
+The source of truth is `src/lunabot_gazebo/models/lunabot_v4/model.sdf`. It defines a 24 kg chassis (plus component masses), box chassis collision of 0.95 × 0.68 × 0.22 m, upper/lower decks, front armor, rails, two rocker and two bogie revolute assemblies, four steer knuckles, six cylindrical wheel collision elements (radius 0.17 m, width 0.13 m), mast/sensor head, antenna and solar-panel visuals. Suspension joints have finite angular limits and damping; the model represents rocker-bogie-like articulation. Six wheels are grouped into left/right DiffDrive joints; wheel separation configured to 1.03 m. The SDF also configures wheel surface friction and command safety plugin.
+
+![Illustrative SDF-informed LunaBot rover schematic](assets/report_rover_schematic.png)
+
+This is a schematic aid based on the model layout, not a Gazebo rendering, manufacturing drawing or to-scale camera placement record.
+
+Those are simulated dimensions/parameters, not a manufactured rover's specification. A single “total mass” should not be inferred from the 24 kg chassis value: sum all SDF link masses and verify model dynamics before quoting system mass. Collision and visual geometry differ in detail; physical material/soil interaction is not calibrated. Chassis inertial tensor and individual link inertia are explicitly represented in SDF. Mechanical suspension response has a simulation test record in `evidence/runs/20261104-p103/report.md`; it is not field qualification. There is no real CAD, hardware BOM, suspension test article or calibrated wheel-soil model in the inspected source.
+
+## 6. Sensors and data contracts
+
+Sensor topic and rate observations below are from the Phase B live contract audit (`docs/sensor-contracts.md`, 2026-11-03); the SDF baseline differs in camera resolution and some later launchers create a runtime model variant. Quote both context and configuration. Frequencies are simulation-time observations, not wall-clock throughput guarantees.
+
+| Sensor | Purpose / topic / message | Source configuration and measured observation | Frame / noise / use |
+|---|---|---|---|
+| RGB camera | Terrain semantics; `/lunabot/camera/image_raw`, `sensor_msgs/Image`; matching `/lunabot/camera/camera_info` | SDF 20 Hz, 160×120, RGB8, horizontal FOV 1.047 rad, clip 0.05–80 m; live audit 19.71 Hz and 640×480 | Scoped optical frame; image inference and RGB-D registration; simulated renderer, no physical-camera noise calibration claimed. |
+| Depth camera | Range/elevation; `/lunabot/depth/image_raw`, `Image`; CameraInfo topic | SDF 15 Hz, 160×120, horizontal FOV 1.047 rad, clip 0.10–40 m; live audit 14.48 Hz, 640×480, 32FC1 metres | Optical frame; projection produces map-aligned geometry/risk layers. Camera vertical offset is 0.04 m: equal image dimensions/FOV do not mean pixels are registered. |
+| 2D GPU LiDAR | SLAM and obstacle points; `/lunabot/lidar/scan`, `sensor_msgs/LaserScan` | 10 Hz, 720 beams across −π..π, range 0.15–60 m, range resolution 0.01 m; audit measured 10 Hz | Mast frame with downward pitch 0.5 rad; no explicit scan noise model seen in SDF. Obstacle detector gates front wedge and range, then transforms hit cells to map. |
+| IMU | Angular velocity and linear acceleration; `/lunabot/imu`, `sensor_msgs/Imu` | 100 Hz; angular Gaussian stddev 0.0002 per axis, linear acceleration stddev 0.002 per axis in SDF; audit 100 Hz | `imu_link`, 0.10 m above chassis. Not fused into a documented production EKF in current path. Covariance/accuracy is not proven by rate. |
+| Wheel odometry | Local motion prior; `/lunabot/odom`, `nav_msgs/Odometry` | DiffDrive configured with wheel radius 0.17 m, separation 1.03 m; audit 29.41 Hz | `odom` parent, `chassis` child; simulation found calibrated straight/turn agreement under a particular friction profile, while low-friction behavior is known weak. |
+
+Sensor contracts also record RGB/Depth CameraInfo focal lengths about 554.38 px on the 640×480 audited runtime and less than one-pixel agreement between intrinsics and SDF FOV. This is simulator contract checking, not optical calibration. Phase P6 projection and crater-risk calibration passed a seeded Gazebo gate with four captures; live ROS registration precision and hardware calibration remain distinct open checks.
+
+Example source excerpt: `model.sdf` sets the RGB topic `/lunabot/camera/image_raw`, rate 20 Hz, 160×120 R8G8B8 and 60° horizontal FOV; `obstacle_detector.py` subscribes to `/lunabot/lidar/scan` and emits `/lunabot/obstacles/map` (`OccupancyGrid`), `/lunabot/obstacles/markers` (`Marker`) and status (`String`). The run evidence itself has message samples in `evidence/runs/terrain-goal-20261116-recheck/`.
+
+## 7. Mapping, perception and planning
+
+`slam_toolbox` consumes LiDAR scan plus wheel odometry/TF and produces occupancy `/map`, `map→odom`, and pose-graph capabilities. Mapping and saved-map localization are separate launch modes (Phase C). Evidence records map reload preserving unknown cells and a short-route localization position error 0.229877 m against a 0.25 m bound; this is narrow scope. The 2026-11-16 map was 313×613 cells at 0.05 m/cell, origin (−4.97, −15.4, 0). The newer successful 2026-11-19 manual mission map copied into `assets/` is 463×458 cells at 0.05 m/cell, origin (−11.3, −14.5, 0). Each raster's dimensions describe its bounding grid, not proof that all cells are observed or traversable.
+
+![Actual saved Phase L occupancy grid raster](assets/phase_l_occupancy_map.svg)
+
+The newest 2026-11-19 interactive-session raster is also available as [PNG](assets/phase_l_map_20261119.png), paired with its original [PGM](assets/phase_l_map_20261119.pgm) and [YAML](assets/phase_l_map_20261119.yaml). It comes from run `20261119-211105-phase-l-lunar-design-34687`, whose launcher marked manual mission/map-update qualification not evaluated even though a later mission-log entry reports `MISSION_DEMO_PASS`; treat this map as additional evidence, not a fully accepted presentation trial.
+
+RGB-D terrain perception emits segmentation (`mono8`), overlay, confidence/status and mapped semantic classes. Active P5 model is three class (regolith, rock, shadow), not the archived five-class model. Semantic/geometric mapping layers include semantic class, confidence, age, uncertainty, slope, roughness and crater risk. Terrain cost fusion combines normalized configured risk weights (slope .25, roughness .20, crater risk .35, uncertainty .20) into a 0–100 cost: hard obstacles are 100, unknown/shadow maps to caution cost (80 by default), and known traversable terrain begins at 20. This is engineered scoring, not a physical wheel sinkage or rollover model.
+
+Occupancy baseline uses grid A* with unknown/occupied policy and obstacle inflation; terrain-aware planning uses weighted A* over aligned cost and obstacle grids, with configurable cost weight 2.0, unknown cost 80, blocked cost 100 and obstacle inflation 0.35 m by default. Dynamic updates are detected by map revision and replan. D* Lite exists as an isolated candidate only. A matched 9-pair deterministic grid benchmark rejected adopting it; that benchmark is not end-to-end robot latency evidence.
+
+The LiDAR obstacle detector considers forward returns (front half-angle default 0.60 rad; detection distance 1.50 m; minimum 0.25 m) and maps observations into a 160×160 grid at 0.10 m resolution with origin (−8,−8). The path follower checks recent path and obstacle grid, forces zero if the route is blocked or inputs stale, and publishes a command request. It does not guarantee collision-free physical motion outside its grid footprint/model assumptions.
+
+## 8. Control and autonomy lifecycle
+
+Planner/follower/teleop publishers write `/cmd_vel_in`. `control_odometry.py` is the ROS command boundary and sole ROS `/cmd_vel` publisher; it validates and limits commands and uses a 0.5 s ROS controller timeout. A native `CommandWatchdog` plugin independently forwards actuator commands and stops on timeout (SDF configured 0.25 s). New controller starts inhibited; safety health and explicit arming are required; faults latch. In Phase L the follower additionally gates motion on fresh mission status. Gazebo DiffDrive receives the final command and actuates the six wheel joints. Operator reset/estop and health protocols are documented in `docs/safety-control.md` and `docs/safety-faults.md`.
+
+The lifecycle supervisor validates map/goal structure and moves through `WAITING_FOR_MAP → WAITING_FOR_GOAL → READY → ACTIVE → COMPLETED`, with PAUSED/BLOCKED/FAILED/CANCELLED/E_STOPPED routes. It is evidence/state supervision, not a velocity planner or ROS action server. A valid goal receives a stable ID; durable event/delivery recording uses SQLite. In Phase L, completion requires nonempty terrain plan, dynamic replan PASS, integrated goal reached, evaluation PASS, and actual goal/map/obstacle events (plus manually selected goal for the presentation gate).
+
+## 9. Gazebo environment and realism boundary
+
+`src/lunabot_gazebo/worlds/lunar_world.sdf` defines world `lunar_world`, gravity 0,0,−1.62 m/s², generated mesh terrain (render and collision mesh variants), lunar surface details, rocks/obstacles and habitat structures. Gazebo physics/sensor/contact/IMU systems are enabled. `tools/generate_lunar_terrain.py` and run/launch scripts prepare the environment. Gazebo Fortress 1.0.3 is identified in qualification instructions/evidence; environment setup documents ROS 2 Humble and Fortress (or compatibility effort on newer Gazebo). The available document does not certify one solver as a physical lunar soil model; the SDF physics configuration and run parameters should be captured for a particular experiment.
+
+The low lunar gravitational acceleration is configured. Vacuum, dust electrostatics/abrasion, radiation, thermal cycles, real solar illumination/shadow constraints, communication delay/outages, regolith cohesion and particle-scale wheel-soil mechanics are not comprehensively simulated. Textured terrain and mesh collisions do not constitute validated lunar terrain. Gazebo camera/LiDAR/IMU are synthetic sensors. Physics performance, rendering, clock behavior and WSL scheduling may alter observed rates and timings.
+
+## 10. RViz and coordinate interpretation
+
+The repository contains phase-specific RViz configs `rviz/phase_a.rviz` through `phase_l.rviz`. Depending on phase/config, operator-facing displays include RobotModel/TF, map, scan, odometry, segmentation/overlay, semantic layers, cost map, obstacle markers, goal and plans. Fixed frame for map-navigation views is `map`; local wheel odometry uses `odom`; base is `chassis`; scanner and camera data use their stamped sensor frame. `map→odom` corrects accumulated local drift, while `odom→chassis` tracks local motion. RViz display availability and topic/QoS are config-specific; do not claim every display is active in every phase. A latest run's topic list contains `/map`, `/tf`, `/tf_static`, `/plan`, `/lunabot/terrain/plan`, `/lunabot/terrain/cost_map`, obstacle and semantic-layer topics. The inspected repository contains no captured Gazebo/RViz GUI screenshot proving a visual mission; see Image Catalog for the required recapture steps.
+
+## 11. Algorithms and mathematical foundations
+
+### Differential-drive approximation
+
+Although six wheels are simulated, left/right wheel groups are commanded as differential sides. With effective radius `r`, track/separation `b`, left/right angular rates `ωL, ωR`, ideal no-slip body velocities are:
+
+`v = r(ωR + ωL)/2`, `ω = r(ωR − ωL)/b`.
+
+Pose integrates `ẋ=v cos θ`, `ẏ=v sin θ`, `θ̇=ω`. With measured linear/angular twist over `Δt`, exact constant-twist update uses `Δθ=ωΔt`; for nonzero `ω`, `x += (v/ω)(sin(θ+Δθ)−sinθ)` and `y -= (v/ω)(cos(θ+Δθ)−cosθ)`. Wheel odometry assumes contact and geometry; slip violates that model. It is treated as a local prior, not universally correct truth.
+
+### Grid transforms and path costs
+
+For axis-aligned grid resolution `ρ` and origin `(x₀,y₀)`, cell `(i,j)` maps to `x=x₀+(i+0.5)ρ`, `y=y₀+(j+0.5)ρ`; inverse uses floor. Occupancy thresholds and inflation convert occupied neighborhoods to forbidden/cost cells. A* selects minimum `f(n)=g(n)+h(n)`. Weighted terrain A* adds nonnegative traversal penalties, conceptually `g(v)=g(u)+d(u,v)(1+λ c(v)/100)` with neighbor metric `d` and configured cost weight `λ`; exact implementation is `scripts/terrain_plan.py`. Heuristic admissibility/optimality is not claimed for weighted scoring. Coordinates and resolution must agree before grid fusion (`terrain_costs.GridGeometry.compatible`).
+
+### RGB-D projection and terrain scores
+
+For pinhole intrinsics `(fx,fy,cx,cy)`, pixel `(u,v)` and depth `z` project to camera coordinates `X=(u−cx)z/fx`, `Y=(v−cy)z/fy`, `Z=z`; transform by camera→base→map SE(3), then place in a grid cell. Timestamp matching, optical axes and moving mast transform matter. Depth errors grow with range and angular calibration; mismatched RGB/depth rays create systematic bias.
+
+### Path following
+
+The follower steers towards a look-ahead path pose using heading error normalized to `[-π,π]`, bounded linear/angular outputs and goal tolerance (Phase L contract uses a 0.35 m evaluator goal envelope; follower internal stopping margin may be tighter). It monitors plan age, obstacle grid age and mission state, stopping when an invariant fails. This is a conservative waypoint/path follower, not Nav2 MPPI/DWB.
+
+### Segmentation
+
+Active learned semantic inference is a trained three-class model with regolith/rock/shadow labels and confidence. Metrics: held-out mIoU 0.6057 from 749 records, with class IoU regolith .9181, rock .3691, shadow .5300. Single corpus and scene-isolated split; shadow is not a hazard class ground truth, and this number does not measure navigation safety.
+
+## 12. Mission execution and operating procedure
+
+From Linux/WSL with ROS sourced, manual final demo is `WSL_SOFTWARE_PROFILE=1 FINAL_DEMO=1 AUTO_GOAL=false EVIDENCE=1 bash ./launch-l` for the documented WSL presentation profile. Wait for map and use RViz `Set Goal`; select destination on mapped connected free space and set heading. Observe scan/obstacle status, terrain plan, follower, safety status and mission state. Mission command/status uses `/lunabot/mission/command` and `/lunabot/mission/status`. For headless automated regressions use documented `DEMO=1 AUTO_GOAL=true REQUIRE_MANUAL_GOAL=false EVIDENCE=1 HEADLESS=1 ~/launch-l`, which is explicitly not the manual presentation gate. Follow the run qualification guide before interpreting results.
+
+The P8 habitat–science–habitat demonstration reported three independent round trips, nine completed legs and three durable software delivery events. On 2026-11-19, two separate WSL GUI runs (`20261119-164616-phase-l-view-4738` and `20261119-171329-phase-l-view-6711`) passed all 11 presentation-specific checks: manual RViz goal, terrain plan, dynamic replan, integrated goal, evaluation, mission completion, nonzero command input/output, active controller, live SLAM map update and typed presentation graph. Both also passed the separate final map-save check. Mission records include 57 and 65 map updates. The obstacle-to-changed-plan interval was 56.7548 s and 75.9028 s, showing high variability in this WSL GUI profile; it is measured from detector status receipt and excludes earlier sensor acquisition/transport. These two passes are bounded demonstrations, not a reliability rate. Same-day failed and partial attempts remain in the evidence ledger. Later interactive startup profiles passed launch checks, but their final validator marked manual mission/map-update proof not evaluated; one later log recorded a mission pass after that verdict. These are not counted as complete acceptance passes. All are separate from the 15 deterministic P10 planner fixtures. Mission completion is software state completion, not science payload operation.
+
+## 13. Experiments, evidence and measurable results
+
+See [LunaBot_Experiments_and_Results.md](LunaBot_Experiments_and_Results.md). The evidence ledger distinguishes live Gazebo, planner fixtures, ML test data and source-level checks. Selected established numbers:
+
+| Evidence | Observed outcome | Scope caveat |
+|---|---|---|
+| Phase A–L lifecycle and contracts | A–L launchers, phase-specific scripts/config, tests, run folders exist | README's individual phase statuses are historical; current roadmap/verification matrix records gaps and limited gates. Not every phase has a full current end-to-end runtime regression. |
+| P3-02 localization | 0.229877 m short-route position error; 0.000053 rad heading error against 0.25 m / 0.15 rad bounds | One short-route simulation qualification, not broad environment or hardware localization guarantee. |
+| P5-02 held-out semantics | 749 records; mIoU 0.605734; regolith 0.9181, rock 0.3691, shadow 0.5300 | One frozen analog corpus/checkpoint; not independent deployment/generalization evidence. |
+| P6 seeded calibration | Four captures; plane horizontal p95 0.0219 m (1.5–3 m) / 0.0576 m (3–5 m); vertical p95 0.0096 / 0.0152 m; seeded crater gate passed | Simulator-only known plane and generated crater, not field camera or real lunar soil. |
+| P7 planner comparison | 9 matched deterministic occupancy-grid pairs; current weighted A* median 3.971 ms in P10 snapshot vs D* Lite 23.592 ms | Not live ROS/Gazebo latency; comparison is workload-specific. Recheck source benchmark before quoting because another retry record reports a different run median. |
+| P8-03 missions | 3 independent round trips, 9 completed legs, 3 durable deliveries | Evidence from one committed map/qualification profile; broader metric schema not applied. |
+| P10 scenario fixtures | 15/15 planner fixture attempts pass across five scenarios; terrain paths avoid 6/6 configured hazard-region intersections vs occupancy path intersections 6/6 | Grid plans only; not physical rover clearances or actual hazard entry. |
+| P2-01 measured streams | RGB 19.71 Hz; depth 14.48; LiDAR 10; IMU 100; odometry 29.41 (simulation rates) | Separate Phase B run; runtime model resolution was 640×480 while current baseline SDF says 160×120. |
+
+Mission travel time, actual trajectory-length error across scenarios, collision count, measured physical clearance, recovery success rate, and whole-system CPU/GPU end-to-end resource use: **NOT MEASURED** in the cited P10 accounting. See evidence directories and the experiment table, do not transform unavailable/null into zero or pass.
+
+P10 fixture median planned lengths in metres (not rover odometry) were: easy sample delivery, occupancy 3.4 / terrain 3.4; crater-aware navigation, 3.5 / 3.914214; unexpected obstacle, 3.5 / 3.5; uncertain terrain, 3.5 / 3.914214; full outbound-return, 7.608326 / 7.608326. These medians summarize three fixture trials per scenario in the P10-03 report and should not be read as a universal preference for the longer terrain path.
+
+## 14. Limitations and critical evaluation
+
+* **Simulation-to-real gap:** no physical rover or wheel-soil validation; contact coefficients and effective track are model parameters. Impact: terrain cost may not predict sinkage, slip, rollover or stopping distance. Remedy: instrumented rover, soil bins, calibrated contact/traction data and staged sim-to-real trials.
+* **Sensing and calibration:** sensor images/ranges are simulated; RGB-depth live projection tolerance is not yet measured. Impact: segmentation and risk map cells can be spatially misplaced. Remedy: calibration targets, synchronized live validation, error bounds, camera noise and occlusion tests.
+* **Localization:** wheel odometry can drift/slip; SLAM evidence is short-route bounded. No canonical production multi-sensor EKF is evidenced. Remedy: longer loops, repeatable seeded scenes, independent truth, slip-aware fusion and dropout tests.
+* **Risk model:** slope/roughness/crater/uncertainty layers use heuristic discrete costs; semantic classes and confidence are dataset dependent. No verified rover dynamics/energy/clearance constraints are encoded as learned safety envelopes. Remedy: mechanical traversability calibration and risk calibration against held-out terrain/mobility outcomes.
+* **Planning/control:** grid and waypoint follower are comparatively simple; no Nav2 stack, model-predictive controller, 3D footprint/rollover check or certified safety case. Costmap and collision semantics depend on grid assumptions. Remedy: footprint-aware planning, dynamic constraints, local 3D planner and bounded safety review.
+* **Experiment coverage:** many performance metrics are unavailable; P10 fixtures are not live missions, and only a small number of P8 real simulation round trips exist. Remedy: pre-register and run repeated live trials with timestamps, collisions, clearance, completion, path length, energy proxy and recovery outcome.
+* **Environment fidelity:** lunar gravity is set, but vacuum, thermal/radiation cycles, electrostatic dust, lighting extremes, communications delay and validated regolith mechanics are missing. Remedy: add environment models with traceable parameter sources.
+* **Operational/software:** GUI/WSL scheduler profile is presentation-specific; target machine acceptance is separate. Run reports note open resource/restart qualification and no full A–L current regression. Remedy: clean reproducible image, overload and restart qualification.
+* **Mission payload:** mission event names can imply delivery, but payload manipulation/sample identification/collection is absent. Remedy: implement validated perception-to-arm task planning and gripper/arm hardware only after mobility and safety qualification.
+
+## 15. Existing systems comparison
+
+| Aspect | LunaBot V4 | Curiosity / Perseverance / VIPER (high-level official material) |
+|---|---|---|
+| Platform/evidence | Student simulation in Gazebo/ROS 2; map, synthetic sensors and local workstation | Flight/project rover programs with mission operations, flight software, real instruments and environmental/operational qualification. |
+| Perception/navigation | 2D LiDAR SLAM, RGB-D semantic/geometry layers, 2D grid cost planning | Curiosity and Perseverance rely on rover camera-based 3D terrain assessment; Perseverance AutoNav plans around obstacles while driving; VIPER technical concepts describe stereo camera and lighting for lunar visibility and short waypoint drives. |
+| Localization | Wheel odometry plus LiDAR SLAM, narrow simulation truth comparison | Flight navigation combines specialized sensing, wheel/inertial data, visual/terrain localization and operational procedures; details differ by mission. |
+| Terrain/mobility | Configured mesh terrain and articulated six-wheel model; not soil-calibrated | Mission-specific mobility systems, hazard envelopes, onboard flight/ground procedures, validated constraints. |
+| Autonomy/operations | Local goal and mission-event state machine; ROS command boundary | Human rover teams set science/traverse goals; autonomy is integrated with flight operations, fault management and communications schedules. |
+| Claims | End-to-end engineering prototype and bounded simulation demonstrations | Operational planetary mission capability; not a directly comparable benchmark. |
+
+LunaBot is not equivalent to, derived from, or flight-qualified like these rover systems. See official references in `references.md`.
+
+## 16. Development roadmap
+
+**Short term (high feasibility):** complete frozen live Phase L repeat/manual acceptance and safety fault qualification; reconcile current launch status table; capture proper Gazebo/RViz screenshots; publish run metadata/hashes; measure goal/travel time, actual trajectory, clearance/collisions and recovery in live repeated runs; measure current RGB-D ROS projection tolerance; resource profile whole stack.
+
+**Medium term (research value):** robust sensor synchronization and uncertainty-aware multi-sensor fusion; long-route SLAM/slip qualification; calibrated 3D traversability and vehicle footprint constraints; compare weighted A* with Nav2 planners and dynamic local control in matched seeded scenes; test semantic model across held-out terrain/lighting/domain shifts; add instrumented arm/gripper simulator only with explicit manipulation requirements.
+
+**Long term:** physical rover prototype and instrumented soil/obstacle campaign; sim-to-real transfer with physical sensor calibration; scientific target detection and arm/sample operations; communication/energy-aware mission planning; fault-tolerant autonomy; carefully justified learning control only after interpretable baselines and safety bounds. Reinforcement learning is an option, not a necessary upgrade; any use needs constrained action space, domain randomization and safety validation.
+
+## 17. Reproduction and source map
+
+Project requirements, setup and launcher usage: `README.md`, `docs/full-launch-a-to-l.md`, `docs/phase-12-launch-l.md`, `docs/phase-l-physical-qualification.md`. Model/world: `src/lunabot_gazebo/models/lunabot_v4/model.sdf`, `src/lunabot_gazebo/worlds/lunar_world.sdf`. Launch/bridge: `src/lunabot_bringup/launch/simulation.launch.py`, `scripts/launch-*.sh`. Main algorithm sources: `scripts/astar_navigation.py`, `terrain_plan.py`, `terrain_aware_planner.py`, `terrain_cost_mapper.py`, `terrain_costs.py`, `semantic_terrain_mapper.py`, `semantic_projection.py`, `obstacle_detector.py`, `terrain_path_follower.py`, `control_odometry.py`, `mission_lifecycle.py`, `phase_l_mission.py`, `odom_tf_broadcaster.py`, `sensor_mount_tf.py`. Tests: `tests/`; evidence: `evidence/runs/`; RViz configurations: `rviz/`.
+
+## 18. Research paper, presentation and final report
+
+Draft paper, slide outline and report-ready chapter structure are provided in their companion files. The draft deliberately frames the work as an integrated simulation study and does not invent a novel algorithm, live performance data, or citations. Before academic submission, add author/supervisor/institution details, date/commit/hash, exact software and hardware environment, experiment protocol, and approved references; run the experiments marked unavailable.
+
+## 19. Visual evidence and final documentation check
+
+Actual repository evidence in `assets/` includes the P10 generated SVG plots, maps from the 2026-11-19 GUI sessions, and an SDF-informed illustrative rover schematic. The map PGM/PNG pairs are raster evidence, not screenshots; the schematic is not a rendered Gazebo view. No actual Gazebo/RViz GUI screenshot was located in the sampled evidence assets. Do not use diagrams or map rasters as substitutes for a screenshot. Exact recapture commands and the missing evidence list are in `LunaBot_Image_Catalog.md`.
+
+Known outstanding technical questions: current vs runtime camera resolution by launch profile; wide-route localization error; live projection tolerance; physics/contact parameter traceability; target-machine GUI qualification; full current A–L regression; mission duration/recovery/collision/clearance instrumentation. A separate “Goal Master Plan” referenced in project planning materials was not found, so its requirement coverage cannot be verified. These are open measurement tasks, not claims of failure or success.

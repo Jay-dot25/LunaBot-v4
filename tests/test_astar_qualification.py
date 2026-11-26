@@ -30,6 +30,8 @@ def make_planner(width=12, height=12, resolution=1.0, origin=(0.0, 0.0, 0.0),
     nav.occupied_threshold = 65
     nav.unknown_is_obstacle = True
     nav.map_frame = "map"
+    nav.auto_goal = False
+    nav.goal_sent = True
     return nav
 
 class AStarQualificationTests(unittest.TestCase):

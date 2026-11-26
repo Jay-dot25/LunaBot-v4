@@ -5,9 +5,9 @@ This node converts the approved Phase F semantic terrain grid into a numeric
 traversability cost grid. It is intentionally not connected to A* yet; Phase H
 will consume this output for terrain-aware planning.
 
-Cost values are 0..100:
+Cost values are -1..100:
+  -1 = unobserved or shadow (the planner applies its caution cost)
   20 = observed terrain candidate
-  80 = unknown / caution
   100 = obstacle or inflated obstacle
 
 Obstacle inflation adds a conservative cost halo without changing the source
@@ -26,6 +26,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 from terrain_costs import GridGeometry, fuse_terrain_costs
+from terrain_plan import merge_obstacle_grid
 
 
 UNKNOWN = -1
@@ -124,6 +125,12 @@ class TerrainCostMapper(Node):
             float(origin.position.y), float(origin.position.z),
             (float(q.x), float(q.y), float(q.z), float(q.w)))
 
+    @staticmethod
+    def _yaw(orientation) -> float:
+        q = orientation
+        return math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                          1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+
     def _layer_callback(self, name: str, msg: OccupancyGrid) -> None:
         self.layer_maps[name] = msg
         if self.last_semantic_map is not None:
@@ -204,22 +211,41 @@ class TerrainCostMapper(Node):
             crater_risk=list(self.layer_maps["crater_risk"].data[:width * height]),
             uncertainty=list(self.layer_maps["uncertainty"].data[:width * height]),
             terrain_cost=self.terrain_cost, unknown_cost=self.unknown_cost,
-            obstacle_cost=self.obstacle_cost)
+            obstacle_cost=self.obstacle_cost, preserve_unknown=True)
         sensed_obstacles = 0
         overlay = self.last_obstacle_map
         if overlay is not None:
-            # Phase L's obstacle overlay uses the same fixed map geometry as
-            # the semantic grid. Ignore incompatible samples rather than
-            # corrupting the planner's map.
-            same_geometry = (
-                semantic_geometry.compatible(self._geometry(overlay)) and
-                len(overlay.data) >= width * height)
-            if same_geometry:
-                for index, value in enumerate(overlay.data[:width * height]):
-                    if int(value) >= OBSTACLE_VALUE:
-                        if costs[index] < self.obstacle_cost:
-                            sensed_obstacles += 1
-                        costs[index] = self.obstacle_cost
+            # The semantic mapper recenters its rolling window as the rover
+            # moves; the LiDAR map may keep a fixed origin. Reproject obstacle
+            # cell centers by their map coordinates instead of dropping the
+            # entire overlay when the two OccupancyGrid origins differ.
+            obstacle_width = int(overlay.info.width)
+            obstacle_height = int(overlay.info.height)
+            same_frame = (
+                overlay.header.frame_id == msg.header.frame_id
+                and obstacle_width > 0 and obstacle_height > 0
+                and len(overlay.data) == obstacle_width * obstacle_height)
+            if same_frame:
+                obstacle_origin = overlay.info.origin
+                costs_before_overlay = costs
+                costs = merge_obstacle_grid(
+                    costs, width, height,
+                    origin_x=msg.info.origin.position.x,
+                    origin_y=msg.info.origin.position.y,
+                    origin_yaw=self._yaw(msg.info.origin.orientation),
+                    resolution=float(msg.info.resolution),
+                    obstacles=overlay.data,
+                    obstacle_width=obstacle_width,
+                    obstacle_height=obstacle_height,
+                    obstacle_origin_x=obstacle_origin.position.x,
+                    obstacle_origin_y=obstacle_origin.position.y,
+                    obstacle_origin_yaw=self._yaw(obstacle_origin.orientation),
+                    obstacle_resolution=float(overlay.info.resolution),
+                    obstacle_threshold=OBSTACLE_VALUE,
+                    inflation_radius=0.0)
+                sensed_obstacles = sum(
+                    1 for before, after in zip(costs_before_overlay, costs)
+                    if before < self.obstacle_cost and after >= self.obstacle_cost)
         obstacle_count, inflated_count = self._inflate(
             costs, width, height, float(msg.info.resolution))
         output = OccupancyGrid()
@@ -230,8 +256,11 @@ class TerrainCostMapper(Node):
         self.last_cost_map = output
         self.cost_pub.publish(output)
         self.frame_count += 1
-        unknown_count = sum(value == self.unknown_cost for value in costs)
-        terrain_count = sum(value == self.terrain_cost for value in costs)
+        unknown_count = sum(value < 0 for value in costs)
+        # Risk fusion raises observed terrain above the base terrain_cost, so
+        # count the full traversable cost range rather than only exact base-cost
+        # cells. Unknown is -1 and obstacles are obstacle_cost or higher.
+        terrain_count = sum(0 <= value < self.obstacle_cost for value in costs)
         self.publish_status(
             f"COST_MAP_PASS frames={self.frame_count} width={width} height={height} "
             f"terrain_cells={terrain_count} unknown_cells={unknown_count} "

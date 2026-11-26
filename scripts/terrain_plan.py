@@ -211,3 +211,64 @@ def merge_obstacle_grid(costs: list[int] | tuple[int, ...], width: int,
                     if 0 <= x < width and 0 <= y < height:
                         merged[y * width + x] = 100
     return merged
+
+
+def select_safe_goal_along_heading(
+        costs: list[int] | tuple[int, ...], width: int, height: int, *,
+        origin_x: float, origin_y: float, origin_yaw: float,
+        resolution: float, start_x: float, start_y: float, heading: float,
+        max_distance: float, min_distance: float = 0.75,
+        distance_step: float = 0.25,
+        lateral_offsets: tuple[float, ...] = (0.0, 0.25, -0.25, 0.5, -0.5),
+        cost_weight: float = 2.0, blocked_cost: int = 100,
+        unknown_cost: int = 80, unknown_is_blocked: bool = False
+        ) -> tuple[float, float, float, float] | None:
+    """Choose the farthest reachable forward goal from a live merged cost map.
+
+    Candidate endpoints are checked with the same weighted-A* policy used by
+    the terrain planner. Lateral offsets let the selector choose a safe target
+    beside a newly observed obstruction while keeping the requested heading.
+    The returned tuple is world x, world y, forward distance, and lateral
+    offset. No candidate is returned when the observed map provides no route.
+    """
+    values = (origin_x, origin_y, origin_yaw, resolution, start_x, start_y,
+              heading, max_distance, min_distance, distance_step,
+              cost_weight)
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("safe-goal geometry and distances must be finite")
+    if (resolution <= 0 or distance_step <= 0 or min_distance <= 0
+            or max_distance < min_distance or blocked_cost < 1
+            or not 0 <= unknown_cost < blocked_cost
+            or not lateral_offsets
+            or not all(math.isfinite(value) for value in lateral_offsets)):
+        raise ValueError("safe-goal search bounds or cost policy are invalid")
+    if width <= 0 or height <= 0 or len(costs) != width * height:
+        raise ValueError("safe-goal grid dimensions are invalid")
+
+    start_cell = world_to_grid(
+        start_x, start_y, origin_x=origin_x, origin_y=origin_y,
+        origin_yaw=origin_yaw, resolution=resolution)
+    if not (0 <= start_cell[0] < width and 0 <= start_cell[1] < height):
+        return None
+
+    count = int(math.floor((max_distance - min_distance) / distance_step)) + 1
+    for index in range(count):
+        distance = max_distance - index * distance_step
+        for lateral in lateral_offsets:
+            goal_x = (start_x + distance * math.cos(heading)
+                      - lateral * math.sin(heading))
+            goal_y = (start_y + distance * math.sin(heading)
+                      + lateral * math.cos(heading))
+            goal_cell = world_to_grid(
+                goal_x, goal_y, origin_x=origin_x, origin_y=origin_y,
+                origin_yaw=origin_yaw, resolution=resolution)
+            if not (0 <= goal_cell[0] < width and 0 <= goal_cell[1] < height):
+                continue
+            path, _ = weighted_astar(
+                costs, width, height, start_cell, goal_cell,
+                cost_weight=cost_weight, blocked_cost=blocked_cost,
+                unknown_cost=unknown_cost,
+                unknown_is_blocked=unknown_is_blocked)
+            if path:
+                return goal_x, goal_y, distance, lateral
+    return None

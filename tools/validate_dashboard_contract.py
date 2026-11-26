@@ -112,9 +112,13 @@ def validate(options: dict, contract: dict, adapter: dict | None = None,
     if adapter is not None:
         adapter_rows = adapter.get("topics", [])
         adapter_topics = [row.get("topic") for row in adapter_rows]
-        required_view_topics = set().union(*(set(row.get("topics", [])) for row in views[:5])) if len(views) >= 5 else set()
+        topic_views = {}
+        for view in views:
+            for topic in view.get("topics", []):
+                topic_views.setdefault(topic, set()).add(view.get("view_id"))
+        required_view_topics = set(topic_views)
         if set(adapter_topics) != required_view_topics or len(adapter_topics) != len(required_view_topics):
-            errors.append("telemetry adapter must cover each views 1-5 topic exactly once")
+            errors.append("telemetry adapter must cover each dashboard view topic exactly once")
         if adapter.get("output_topic") != "/lunabot/dashboard/telemetry":
             errors.append("telemetry adapter must publish only its dedicated metadata topic")
         if adapter.get("output_topic") not in read_only or adapter.get("output_topic") in writes.get("forbidden_write_topics", []):
@@ -126,8 +130,8 @@ def validate(options: dict, contract: dict, adapter: dict | None = None,
             if topic not in read_only:
                 errors.append(f"adapter input is not an allowlisted dashboard topic: {topic}")
             view_ids = set(row.get("views", [row.get("view")]))
-            if not row.get("type") or not view_ids or not view_ids.issubset({view.get("view_id") for view in views[:5]}):
-                errors.append(f"{topic}: adapter type and views 1-5 provenance are required")
+            if not row.get("type") or not view_ids or view_ids != topic_views.get(topic):
+                errors.append(f"{topic}: adapter type and matching view provenance are required")
             try:
                 if float(row.get("stale_after_seconds", 0)) <= 0:
                     errors.append(f"{topic}: stale_after_seconds must be positive")
@@ -158,7 +162,7 @@ def main() -> int:
         for error in errors:
             print(f"FAIL: {error}")
         return 1
-    print("PASS: 3 stacks, 6 views, views 1-5 feeds, guarded view 6 controls, safe write boundary")
+    print("PASS: 3 stacks, 6 views, telemetry feeds, guarded view 6 controls, safe write boundary")
     return 0
 
 

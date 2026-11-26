@@ -27,6 +27,7 @@ from rclpy.time import Time
 from rclpy.executors import ExternalShutdownException
 from std_msgs.msg import String
 import tf2_ros
+from terrain_plan import merge_obstacle_grid, select_safe_goal_along_heading
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -64,6 +65,8 @@ class AStarNavigation(Node):
         self.declare_parameter('auto_goal', False)
         self.declare_parameter('require_path_health', False)
         self.declare_parameter('auto_goal_distance', 1.5)
+        self.declare_parameter('auto_goal_preflight', False)
+        self.declare_parameter('auto_goal_min_distance', 0.75)
         self.declare_parameter('goal_tolerance', 0.35)
         self.declare_parameter('occupied_threshold', 65)
         self.declare_parameter('inflation_radius', 0.25)
@@ -83,6 +86,8 @@ class AStarNavigation(Node):
         self.status_topic = p('status_topic').value
         self.auto_goal = bool(p('auto_goal').value)
         self.auto_goal_distance = float(p('auto_goal_distance').value)
+        self.auto_goal_preflight = bool(p('auto_goal_preflight').value)
+        self.auto_goal_min_distance = float(p('auto_goal_min_distance').value)
         self.goal_tolerance = float(p('goal_tolerance').value)
         self.occupied_threshold = int(p('occupied_threshold').value)
         self.inflation_radius = float(p('inflation_radius').value)
@@ -103,6 +108,15 @@ class AStarNavigation(Node):
         map_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         self.map_sub = self.create_subscription(
             OccupancyGrid, self.map_topic, self._map_callback, map_qos)
+        self.terrain_cost_map = None
+        self.obstacle_map = None
+        if self.auto_goal_preflight:
+            self.terrain_cost_sub = self.create_subscription(
+                OccupancyGrid, '/lunabot/terrain/cost_map',
+                lambda msg: setattr(self, 'terrain_cost_map', msg), map_qos)
+            self.obstacle_map_sub = self.create_subscription(
+                OccupancyGrid, '/lunabot/obstacles/map',
+                lambda msg: setattr(self, 'obstacle_map', msg), map_qos)
         self.goal_sub = self.create_subscription(
             PoseStamped, self.goal_topic, self._goal_callback, 10)
         self.odom_sub = self.create_subscription(
@@ -218,11 +232,58 @@ class AStarNavigation(Node):
         if not self.auto_goal or self.goal_sent:
             return
         x, y, yaw = current
+        lateral = 0.0
+        selected_distance = self.auto_goal_distance
+        if self.auto_goal_preflight:
+            terrain, obstacles = self.terrain_cost_map, self.obstacle_map
+            if terrain is None or obstacles is None:
+                self.publish_status('PLANNER_WAITING_FOR_SAFE_GOAL_MAPS')
+                return
+            if (terrain.header.frame_id != self.map_frame
+                    or obstacles.header.frame_id != self.map_frame):
+                self.publish_status('PLANNER_SAFE_GOAL_FRAME_MISMATCH')
+                return
+            ti, oi = terrain.info, obstacles.info
+            try:
+                merged = merge_obstacle_grid(
+                    terrain.data, int(ti.width), int(ti.height),
+                    origin_x=ti.origin.position.x,
+                    origin_y=ti.origin.position.y,
+                    origin_yaw=yaw_from_quaternion(ti.origin.orientation),
+                    resolution=float(ti.resolution),
+                    obstacles=obstacles.data,
+                    obstacle_width=int(oi.width),
+                    obstacle_height=int(oi.height),
+                    obstacle_origin_x=oi.origin.position.x,
+                    obstacle_origin_y=oi.origin.position.y,
+                    obstacle_origin_yaw=yaw_from_quaternion(oi.origin.orientation),
+                    obstacle_resolution=float(oi.resolution),
+                    obstacle_threshold=65, inflation_radius=0.35)
+                selected = select_safe_goal_along_heading(
+                    merged, int(ti.width), int(ti.height),
+                    origin_x=ti.origin.position.x,
+                    origin_y=ti.origin.position.y,
+                    origin_yaw=yaw_from_quaternion(ti.origin.orientation),
+                    resolution=float(ti.resolution), start_x=x, start_y=y,
+                    heading=yaw, max_distance=self.auto_goal_distance,
+                    min_distance=self.auto_goal_min_distance,
+                    distance_step=0.25, cost_weight=2.0, blocked_cost=100,
+                    unknown_cost=80, unknown_is_blocked=False)
+            except (TypeError, ValueError) as exc:
+                self.publish_status(f'PLANNER_SAFE_GOAL_PREFLIGHT_INVALID {exc}')
+                return
+            if selected is None:
+                self.publish_status('PLANNER_WAITING_FOR_SAFE_AUTO_GOAL')
+                return
+            x_goal, y_goal, selected_distance, lateral = selected
+        else:
+            x_goal = x + self.auto_goal_distance * math.cos(yaw)
+            y_goal = y + self.auto_goal_distance * math.sin(yaw)
         goal = PoseStamped()
         goal.header.frame_id = self.map_frame
         goal.header.stamp = self.get_clock().now().to_msg()
-        goal.pose.position.x = x + self.auto_goal_distance * math.cos(yaw)
-        goal.pose.position.y = y + self.auto_goal_distance * math.sin(yaw)
+        goal.pose.position.x = x_goal
+        goal.pose.position.y = y_goal
         q = quaternion_from_yaw(yaw)
         goal.pose.orientation.x, goal.pose.orientation.y = q[0], q[1]
         goal.pose.orientation.z, goal.pose.orientation.w = q[2], q[3]
@@ -232,7 +293,9 @@ class AStarNavigation(Node):
         self.goal_pub.publish(goal)
         self.publish_status(
             f'AUTO_GOAL_SENT frame={self.map_frame} '
-            f'x={goal.pose.position.x:.2f} y={goal.pose.position.y:.2f}')
+            f'x={goal.pose.position.x:.2f} y={goal.pose.position.y:.2f} '
+            f'preflight={int(self.auto_goal_preflight)} '
+            f'forward_m={selected_distance:.2f} lateral_m={lateral:.2f}')
 
     def _world_to_grid(self, x: float, y: float):
         info = self.map_msg.info
@@ -438,6 +501,9 @@ class AStarNavigation(Node):
             self._send_auto_goal(current)
         except (RuntimeError, tf2_ros.TransformException) as exc:
             self.publish_status(f'PLANNER_WAITING_FOR_TF {exc}')
+            self._publish_stop()
+            return
+        if self.auto_goal and not self.goal_sent:
             self._publish_stop()
             return
         if self.goal_msg is None:

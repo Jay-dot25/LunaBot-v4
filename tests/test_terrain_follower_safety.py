@@ -36,7 +36,14 @@ def make_grid():
 
 def make_follower():
     node = TerrainPathFollower.__new__(TerrainPathFollower)
+    class WallClock:
+        ros_time_is_active = False
+
+    node.get_clock = lambda: WallClock()
     node.obstacle_map = make_grid()
+    node.obstacle_map_received_monotonic = time.monotonic()
+    node.obstacle_map_stamp_ns = None
+    node.obstacle_map_timeout = 1.0
     node.obstacle_threshold = 65
     node.obstacle_clearance = 0.35
     node.require_obstacle_map = False

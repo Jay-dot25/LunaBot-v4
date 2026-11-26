@@ -95,7 +95,7 @@ class P8RoundtripTests(unittest.TestCase):
         self.assertEqual(3.0, reloaded["health"]["max_stamp_age_sim_sec"])
         self.assertEqual(2.0, reloaded["health"]["clock_timeout_wall_sec"])
         self.assertEqual(0.0, reloaded["health"]["map_tf_stamp_offset_sec"])
-        self.assertEqual(0.1, reloaded["health"]["future_tolerance_sim_sec"])
+        self.assertEqual(0.25, reloaded["health"]["future_tolerance_sim_sec"])
         self.assertEqual(0.25, reloaded["health"]["map_tf_future_tolerance_sim_sec"])
         self.assertEqual(30.0, reloaded["health"]["map_tf_motion_grace_wall_sec"])
         self.assertEqual(0.5, reloaded["health"]["health_report_timeout_wall_sec"])
@@ -109,6 +109,16 @@ class P8RoundtripTests(unittest.TestCase):
         self.assertEqual(2.0, settings["health"]["health_report_timeout_wall_sec"])
         baseline = json.loads(source.read_text(encoding="utf-8"))
         self.assertEqual(0.5, baseline["health"]["health_report_timeout_wall_sec"])
+
+    def test_clock_timeout_can_be_tuned_for_wsl_without_changing_default(self):
+        source = ROOT / "config/safety/control.json"
+        with tempfile.TemporaryDirectory() as temp:
+            destination = Path(temp) / "wsl-safety.json"
+            settings = make_profile(
+                source, destination, clock_timeout_wall_sec=6.0)
+        self.assertEqual(6.0, settings["health"]["clock_timeout_wall_sec"])
+        baseline = json.loads(source.read_text(encoding="utf-8"))
+        self.assertEqual(0.5, baseline["health"]["clock_timeout_wall_sec"])
 
 
 if __name__ == "__main__":

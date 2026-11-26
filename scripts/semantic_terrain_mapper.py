@@ -17,6 +17,7 @@ planner/controller path.
 from __future__ import annotations
 
 from collections import deque
+import math
 from typing import Optional
 
 import numpy as np
@@ -288,9 +289,69 @@ class SemanticTerrainMapper(Node):
         msg.info.height = self.height
         msg.info.origin.position.x = self.grid.origin_x
         msg.info.origin.position.y = self.grid.origin_y
+        # This is a 2D SLAM map frame, not Gazebo's 3D world frame. Keep all
+        # OccupancyGrid layers on its z=0 plane; sensor-point elevations are
+        # terrain data and must not move the entire map display vertically.
+        msg.info.origin.position.z = 0.0
         msg.info.origin.orientation.w = 1.0
         msg.data = data
         publisher.publish(msg)
+
+    def _filter_ground_level_obstacles(
+            self, observations: dict[int, tuple[int, float]],
+            elevations: dict[int, float]) -> tuple[int, int]:
+        """Reject rock labels unsupported by local above-ground geometry.
+
+        A dark shadow or a low-confidence visual false positive lies on the
+        same surface as nearby regolith. A real rock return should rise above
+        the locally observed terrain. Without enough nearby ground samples the
+        semantic image alone cannot prove height, so leave that cell unknown;
+        the independent LiDAR obstacle map still reports physical obstacles.
+        """
+        radius = max(2, int(math.ceil(1.0 / self.resolution)))
+        known_ground = ((self.grid.labels == TERRAIN)
+                        & (self.grid.last_seen_ns >= 0)
+                        & np.isfinite(self.grid.elevation))
+        ground_elevation = np.where(known_ground, self.grid.elevation, np.nan)
+        for index, (label, confidence) in observations.items():
+            elevation = elevations.get(index)
+            if (label == TERRAIN and confidence >= self.confidence_min
+                    and elevation is not None and np.isfinite(elevation)):
+                row, col = divmod(int(index), self.width)
+                ground_elevation[row, col] = float(elevation)
+
+        rejected = unsupported = 0
+        for index, (label, confidence) in list(observations.items()):
+            if label != OBSTACLE:
+                continue
+            z = elevations.get(index)
+            if z is None or not np.isfinite(z):
+                observations[index] = (UNKNOWN, 0.0)
+                rejected += 1
+                continue
+            row, col = divmod(int(index), self.width)
+            row0, row1 = max(0, row - radius), min(self.height, row + radius + 1)
+            col0, col1 = max(0, col - radius), min(self.width, col + radius + 1)
+            nearby = ground_elevation[row0:row1, col0:col1]
+            nearby = nearby[np.isfinite(nearby)]
+            if len(nearby) < 3:
+                # RGB semantics cannot distinguish a rock from the rover's
+                # shadow without geometric support. Keep the cell unknown;
+                # the LiDAR obstacle map provides the independent safety path.
+                unsupported += 1
+                observations[index] = (UNKNOWN, 0.0)
+            else:
+                ground = float(np.median(nearby))
+                if abs(float(z) - ground) <= 0.12:
+                    # Geometry says this visually dark/rock-labeled return is
+                    # on the ground. Promote it to terrain so it can also
+                    # replace a stale shadow false-positive already in-grid.
+                    observations[index] = (TERRAIN, 1.0)
+                elif float(z) < ground:
+                    observations[index] = (UNKNOWN, 0.0)
+                if float(z) < ground + 0.12:
+                    rejected += 1
+        return rejected, unsupported
 
     def _process_latest(self) -> None:
         now_ns = self.get_clock().now().nanoseconds
@@ -387,6 +448,8 @@ class SemanticTerrainMapper(Node):
             for index, label in projected.observations.items()
         }
         elevations = projected.observation_elevation or {}
+        rejected_ground_level, unsupported_rock = self._filter_ground_level_obstacles(
+            observations, elevations)
         update = self.grid.update(observations, now_ns, elevations=elevations)
         samples = len(projected.observations)
         self.frame_count += 1
@@ -397,6 +460,8 @@ class SemanticTerrainMapper(Node):
             f"SEMANTIC_MAP_PASS frames={self.frame_count} "
             f"observations={self.observation_count} samples={samples} "
             f"accepted={update.accepted} low_confidence={update.rejected_low_confidence} "
+            f"ground_level_rock_rejected={rejected_ground_level} "
+            f"rock_without_ground_support={unsupported_rock} "
             f"cleared={update.cleared_stale + self.last_clear_count} "
             f"recenter_discarded={self.last_recenter_discarded} "
             f"valid_depth={projected.valid_depth_pixels} "

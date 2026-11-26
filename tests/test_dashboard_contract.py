@@ -44,7 +44,7 @@ class DashboardContractTests(unittest.TestCase):
         adapter = copy.deepcopy(self.adapter)
         adapter["topics"][0]["topic"] = "/world/lunar_world/pose/info"
         errors = validate(self.options, self.contract, adapter, self.controls)
-        self.assertTrue(any("views 1-5 topic" in error for error in errors))
+        self.assertTrue(any("dashboard view topic" in error for error in errors))
         self.assertTrue(any("not an allowlisted" in error for error in errors))
 
     def test_rejects_direct_dashboard_writes_to_unprotected_interfaces(self):

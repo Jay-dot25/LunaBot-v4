@@ -16,9 +16,14 @@ def main():
         pub.publish(Twist()); rclpy.spin_once(n,timeout_sec=.05)
         if not cli.service_is_ready(): continue
         future=cli.call_async(Trigger.Request())
-        while not future.done() and time.monotonic()<deadline:
+        # A dropped DDS response must leave time for another request.
+        # The startup service acknowledges prior success and refuses runtime faults.
+        response_deadline = min(deadline, time.monotonic() + 2.0)
+        while not future.done() and time.monotonic() < response_deadline and rclpy.ok():
             pub.publish(Twist()); rclpy.spin_once(n,timeout_sec=.05)
-        if not future.done(): continue
+        if not future.done():
+            cli.remove_pending_request(future)
+            continue
         reply=future.result(); last_reason=reply.message
         if reply.success: result=True; print(reply.message,flush=True); break
         if reply.message.startswith('Arm refused:'):

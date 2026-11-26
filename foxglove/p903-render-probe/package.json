@@ -1,12 +1,17 @@
 {
   "name": "lunabot-p903-render-probe",
-  "displayName": "LunaBot Camera Render Probe",
-  "description": "Measures camera frame receive-to-paint timing and estimates source gaps for P9-03.",
+  "displayName": "LunaBot P9-03 Dashboard Tools",
+  "description": "Provides six read-only contract health views and a camera render probe for P9-03.",
   "publisher": "lunabot",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "license": "UNLICENSED",
   "main": "./dist/extension.js",
-  "keywords": ["camera", "performance", "render", "lunabot"],
+  "keywords": [
+    "camera",
+    "performance",
+    "render",
+    "lunabot"
+  ],
   "dependencies": {
     "@foxglove/extension": "^2.0.0",
     "react": "^18.3.1",
@@ -20,6 +25,7 @@
     "eslint": "^9.0.0",
     "globals": "^15.0.0",
     "prettier": "^3.0.0",
+    "ts-loader": "9.5.1",
     "typescript": "^5.0.0",
     "typescript-eslint": "^8.0.0"
   },

@@ -1,11 +1,52 @@
 # Six-view dashboard performance gate
 
+## Acceptance continuation (2026-11-17)
+
+The local Foxglove extension `LunaBot P9-03 Dashboard Tools` version 0.2.0
+was installed and is enabled in the signed-in client. Its picker exposes six
+read-only topic-health panel types, one per contract view group. The extension
+build and lint passed. A panel was rendered in the `Coffee Dragonfly` draft;
+it showed the expected sensor contract rows, all `unknown · no metadata`.
+The draft currently has no data source, is marked unsaved, and does not yet
+place and verify all six contract panels in their matching tabs. This proves
+the extension loads, not that the contract is live or accepted. The extension
+is a local install saved on this device, not a hosted organization install.
+
+The six view groups and adapter mapping were statically audited: all 41 topics
+in the six view groups have adapter entries, with no contract read-only topic
+missing a row. Static mapping does not substitute for live panel verification.
+The six-panel layout still needs a live connection, source/status validation,
+reconnect recovery, baseline and doubled-traffic trials, and target-size
+measurements.
+
+The target profile is now frozen in
+`config/profiling/resources.json` as
+`wsl2-hpvictus15-20261117-v1`: stack CPU p95 ≤65% of host, stack RSS p95
+≤3500 MiB, GPU VRAM p95 ≤3072 MiB, RTF ≥0.5, and client receive-to-render
+p95 ≤100 ms. These are project engineering limits, not manufacturer
+specifications. WSL reports 8 logical CPUs and 4920 MiB RAM; Windows display
+scaling is 125% at 1536×864. CIM access was denied, so the current host model is
+unverified, and exact application-viewport rendering still needs evidence.
+
+A five-minute profile captured during an earlier mixed ROS domain 42 session
+with an incomplete browser layout is diagnostic only: stack CPU p95 65.85%
+(FAIL), RSS p95 2482.4 MiB (PASS), GPU VRAM p95 273 MiB (PASS), RTF 0.16885
+(FAIL), and client render p95 unavailable (INCOMPLETE). It is not isolated
+target acceptance and does not establish safe overload behavior. The isolated
+domain 43 restart regression reached the goal but failed dynamic terrain-plan
+replanning; it is not a valid dashboard acceptance workload. No overload
+injection acceptance trial has passed.
+
+P9-03 remains **IN PROGRESS**. Do not use the planner-only P10 scenarios as
+live mission evidence, claim physical hardware qualification, or treat the
+missing separate Goal Master Plan as resolved.
+
 P9-03 requires an actual six-view client session on the target WSL/laptop
-profile. A live six-panel Foxglove session is now verified, and app-level
-diagnostics plus a visible camera frame at 1536×864 are recorded. A custom
-camera probe now has diagnostic runs, but the release gate remains open until
-the full contract workload, browser resource, reconnect, doubled-traffic, and
-target-budget measurements are captured.
+profile. A prior six-panel smoke session and app-level diagnostics plus a
+visible camera frame at 1536×864 are recorded. A custom camera probe now has
+diagnostic runs, but the release gate remains open until the full contract
+workload, browser resource, reconnect, doubled-traffic, and target-budget
+measurements are captured.
 P5 inference timing and planner timing are not dashboard render measurements.
 
 ## Workload
@@ -111,6 +152,49 @@ null. Follow-up records:
 `evidence/runs/20261114-p903/P9-03/foxglove-followup.md` and
 `evidence/runs/20261114-p903/P9-03/followup/summary.md`.
 
+## 2026-11-17 live layout check
+
+The saved `Coffee Dragonfly` layout is connected to `ws://localhost:9091` and
+shows all six contract view names. The custom panels render live topic health,
+source/receive age, and per-topic receive-to-render p95. The mission/safety
+view showed fresh mission, safety, and control status, with p95 values varying
+from about 83 to 202 ms during observation; some observed rows exceed the
+100 ms limit. `/lunabot/mission/events` and
+`/lunabot/dashboard/control_status` remained `unknown · no_sample_received`.
+That view is not the image/map/plan rendering surface, so its timings do not
+complete the source-to-render contract for those message types. The six-view
+static contract covers 41 topics, but full-workload reconnect and native image,
+map, and plan rendering still need capture.
+
+Two isolated five-minute baseline captures ran with the layout source connected
+to domain46. They are recorded under
+`evidence/runs/20261117-p1103-restart/P11-01/`; both fail the frozen RTF limit
+and omit a client render p95 value. No valid doubled-traffic or target-size
+render trial is recorded. An idle-adapter reconnect check has now been
+observed, but it is incomplete for target acceptance. P9-03 remains
+**IN PROGRESS**.
+
+The reconnect check stopped and restarted only the domain46 Rosbridge server
+on port 9091. Foxglove reported 0 panel renders and unknown metadata while it
+was offline. On restart, Rosbridge logged the client connection 2.94 seconds
+after server startup and restored the custom panel subscriptions. The
+mission/safety panel returned to fresh `/lunabot/safety/health`, with receive
+age 22 ms and receive-to-render p95 33 ms. The simulator was not running, so
+mission/control rows were stale; mission events and dashboard control status
+remained unknown. This proves adapter-only reconnect behavior, not the full
+workload or e-stop acknowledgment. Evidence:
+`evidence/runs/20261117-p1103-restart/P9-03/reconnect-01/README.md`.
+
+### 2026-11-17 restart follow-up
+
+Run 14 used the saved six-view layout while the domain46 headless stack was
+active. It did not produce image/map/plan render samples. Mission acceptance
+failed on `HEALTH_STALE_SCAN`; the launch harness
+also failed to retrieve a non-empty retained terrain plan after planner status
+reported `TERRAIN_PLAN_PASS`. Evidence is in
+`evidence/runs/20261117-p1103-restart/P11-03/run-14/README.md`. No doubled
+traffic was injected, and P9-03 remains **IN PROGRESS**.
+
 ### Foxglove client diagnostics
 
 A separate five-minute capture recorded 60 five-second averages from the live
@@ -139,4 +223,46 @@ older statements that Phase L mapping/planner synchronization had not passed.
 This does not close P9-03: the complete six-view native dashboard, target
 resolution, client render/resource instrumentation, reconnect, doubled-traffic
 trials, and approved limits remain unverified. The desktop inspection attempt
-was blocked by a computer-use approval timeout; no dashboard changes were made.
+was blocked by a computer-use approval timeout. The later 2026-11-17 execution
+update above supersedes that earlier state: the extension is installed and the
+six-view hosted layout is saved, though the acceptance workload is incomplete.
+
+Run15 tried the D3D12 renderer and still did not meet target acceptance. Its
+five-minute RTF was 0.2066 against the frozen 0.5 minimum. The mission failed
+with `HEALTH_CLOCK_STALLED` and `NONPOSITIVE_DIMENSIONS`; the startup topic
+probe also timed out on the first depth sample even though the semantic mapper
+later consumed valid depth frames. The image/depth startup probes now retry a
+header-only sample for up to 90 seconds to account for delayed rendering and
+discovery. See
+`evidence/runs/20261117-p1103-restart/P11-03/run-15-renderer-d3d12/README.md`.
+The restart and P9-03 workload acceptance gates remain open.
+
+Run16 confirmed the empty SLAM map startup fix, but its live `/clock`, odometry,
+and control-status samples failed. Run17 then passed all required startup
+topics and dynamic replanning, but did not reach the goal in its 900-second
+wait. The concurrent five-minute RTF was 0.2555, below 0.5; dashboard render
+latency was not captured. Both run reports are linked from
+`docs/p9-03-completion-plan.md` and the P11-03 evidence directory.
+
+### Run 21 and run 22 — live dashboard follow-up
+
+Run21 used an evidence-only world copy with a 2 ms physics step. Its five-minute
+profile passed CPU/RSS/VRAM and measured RTF 0.5057, but client latency was
+missing. The full simulated mission, evaluator, map save, and clean shutdown
+passed. Three fresh P3 trials on that same world yielded two passes and one
+turn-accuracy failure at 0.2912 rad (limit 0.10 rad), so the 2 ms profile is
+not qualified and the canonical 1 ms world remains unchanged. See
+`evidence/runs/20261117-p1103-restart/P11-01/run21-physics-2ms-diagnostic/README.md`
+and the companion P11-03 report.
+
+Run22 connected the saved six-view Foxglove layout during a live Phase L run.
+Startup, planning, dynamic replanning, goal completion, and evaluator passed;
+after that, the safety monitor latched `HEALTH_STAMP_IMU` and the launcher hit
+its 900-second cap before clean shutdown. CPU/RSS/VRAM passed in the post-startup
+five-minute sample. The profiler could not see `/clock`, so RTF is incomplete
+even after its listener was switched to best-effort QoS. Foxglove showed
+fresh/stale/unknown rows, while sensor image receive-to-render p95 remained
+`n/a`; target display size was not verified. Run22 is diagnostic, not a valid
+P9/P11 acceptance trial. No baseline/doubled-traffic set or overload result has
+been collected. See
+`evidence/runs/20261117-p1103-restart/P11-03/run-22-live-six-view-profile/README.md`.

@@ -26,14 +26,16 @@ class NavigationSensorProfileTests(unittest.TestCase):
             self.assertEqual(ET.tostring(original), ET.tostring(derived))
         self.assertEqual(original_bytes, source.read_bytes())
 
-    def test_bounded_watchdog_override_is_local_to_derived_model(self):
+    def test_phase_l_overrides_are_local_to_derived_model(self):
         source = ROOT / 'src/lunabot_gazebo/models/lunabot_v4/model.sdf'
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / 'model.sdf'
-            prepare(source, destination, watchdog_timeout_sec=1.0)
+            prepare(source, destination, watchdog_timeout_sec=1.0, lidar_height=-0.90)
             derived = ET.parse(destination).getroot()
             watchdog = derived.find(".//plugin[@name='lunabot::CommandWatchdog']/timeout_sec")
             self.assertEqual('1.0', watchdog.text)
+            self.assertEqual('0.35 0 -0.90 0 0 0',
+                             derived.find(".//sensor[@name='lidar']/pose").text)
             baseline = ET.parse(source).getroot()
             original = baseline.find(".//plugin[@name='lunabot::CommandWatchdog']/timeout_sec")
             self.assertEqual('0.25', original.text)

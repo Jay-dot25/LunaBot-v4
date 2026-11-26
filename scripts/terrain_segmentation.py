@@ -218,6 +218,14 @@ class TerrainSegmentation(Node):
             if result.stale or result.status.startswith("INVALID_"):
                 labels.fill(UNKNOWN_ID)
                 confidence_values.fill(0.0)
+            # The model predicts semantic classes over the full camera frame,
+            # including the sky and distant horizon.  Those pixels must never
+            # enter a ground traversability map, even when depth reports a
+            # finite far-range value for them.
+            ground_row = min(height, max(0, int(math.ceil(
+                height * self.ground_roi_start))))
+            labels[:ground_row, :] = UNKNOWN_ID
+            confidence_values[:ground_row, :] = 0.0
             confidence = (confidence_values * 255.0).round().astype("uint8")
             overlay = bytearray(width * height * 3)
             counts = {REGOLITH: 0, ROCK: 0, SHADOW: 0}

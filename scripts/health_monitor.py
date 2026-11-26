@@ -14,6 +14,7 @@ class Monitor(Node):
     def __init__(self,config,require_map,path_topic):
         super().__init__('lunabot_health_monitor')
         self.epoch=0; self.sequence=0; self.instance=uuid.uuid4().hex
+        self.last_reported_reason=None
         self.require_map=require_map; self.path_topic=path_topic
         self.health=SafetyHealth(self,config,require_map,path_topic)
         self.pub=self.create_publisher(String,'/lunabot/safety/health',1)
@@ -27,9 +28,23 @@ class Monitor(Node):
         if reason=='CLOCK_JUMP': self.epoch+=1
     def report(self):
         self.sequence+=1
+        reason=self.health.error(False)
+        if reason and reason!=self.last_reported_reason:
+            details=""
+            if reason.startswith('STAMP_'):
+                name=reason[len('STAMP_'):].lower()
+                sample=self.health.seen.get(name)
+                if sample is not None and self.health.clock is not None:
+                    value,received=sample
+                    details=(f' sim_time={self.health.clock:.6f}'
+                             f' source_stamp={value:.6f}'
+                             f' stamp_age_sim_sec={self.health.clock-value:.6f}'
+                             f' receive_age_wall_sec={time.monotonic()-received:.6f}')
+            self.get_logger().warning(f'SAFETY_HEALTH_LATCH reason={reason}{details}')
+        self.last_reported_reason=reason
         payload={'schema':1,'created_monotonic':time.monotonic(),'instance':self.instance,'sequence':self.sequence,'epoch':self.epoch,
                  'require_map':self.require_map,'path_topic':self.path_topic,
-                 'reason':self.health.error(False),'motion_reason':self.health.error(True),
+                 'reason':reason,'motion_reason':self.health.error(True),
                  'sim_time':self.health.clock}
         self.pub.publish(String(data=json.dumps(payload)))
 def main():

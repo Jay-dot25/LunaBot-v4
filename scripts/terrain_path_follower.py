@@ -123,7 +123,9 @@ class TerrainPathFollower(Node):
         self.path: list[tuple[float, float]] = []
         self.path_received_monotonic: Optional[float] = None
         self.obstacle_map: Optional[OccupancyGrid] = None
+        self.obstacle_points_map: list[tuple[float, float]] = []
         self.obstacle_map_received_monotonic: Optional[float] = None
+        self.obstacle_map_stamp_ns: Optional[int] = None
         self.goal: Optional[PoseStamped] = None
         self.odom: Optional[Odometry] = None
         self.reached = False
@@ -269,12 +271,41 @@ class TerrainPathFollower(Node):
                 msg.info.resolution <= 0.0 or
                 len(msg.data) != msg.info.width * msg.info.height):
             self.obstacle_map = None
+            self.obstacle_points_map = []
             self.obstacle_map_received_monotonic = time.monotonic()
+            self.obstacle_map_stamp_ns = None
             self.publish_status("INTEGRATION_INVALID_OBSTACLE_MAP")
             self._publish_stop()
             return
         self.obstacle_map = msg
+        origin = msg.info.origin
+        q = origin.orientation
+        yaw = math.atan2(2.0 * q.w * q.z,
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        cosine, sine = math.cos(yaw), math.sin(yaw)
+        self.obstacle_points_map = []
+        for index, value in enumerate(msg.data):
+            if value < self.obstacle_threshold:
+                continue
+            gx, gy = index % msg.info.width, index // msg.info.width
+            local_x = (gx + 0.5) * msg.info.resolution
+            local_y = (gy + 0.5) * msg.info.resolution
+            self.obstacle_points_map.append((
+                origin.position.x + cosine * local_x - sine * local_y,
+                origin.position.y + sine * local_x + cosine * local_y))
         self.obstacle_map_received_monotonic = time.monotonic()
+        self.obstacle_map_stamp_ns = Time.from_msg(msg.header.stamp).nanoseconds
+
+    def _obstacle_map_age(self) -> Optional[float]:
+        if self.obstacle_map is None:
+            return None
+        clock = self.get_clock()
+        if clock.ros_time_is_active and self.obstacle_map_stamp_ns is not None:
+            return max(0.0, (clock.now().nanoseconds -
+                             self.obstacle_map_stamp_ns) / 1e9)
+        if self.obstacle_map_received_monotonic is None:
+            return None
+        return time.monotonic() - self.obstacle_map_received_monotonic
 
     @staticmethod
     def _grid_cell(grid: OccupancyGrid, x: float, y: float) -> tuple[int, int]:
@@ -312,12 +343,23 @@ class TerrainPathFollower(Node):
                     return True
         return False
 
+    def _nearest_obstacle_distance(self, x: float, y: float) -> float:
+        if not self.obstacle_points_map:
+            return math.inf
+        return min(math.hypot(x - ox, y - oy)
+                   for ox, oy in self.obstacle_points_map)
+
     def _path_intersects_obstacle(self, start: tuple[float, float],
                                   start_index: int) -> bool:
         if self.obstacle_map is None:
             return False
         points = [start, *self.path[start_index:]]
         step = max(0.02, self.obstacle_map.info.resolution * 0.5)
+        effective_clearance = (
+            self.obstacle_clearance +
+            math.sqrt(2.0) * self.obstacle_map.info.resolution)
+        previous_clearance = self._nearest_obstacle_distance(*start)
+        escaping_existing_clearance = previous_clearance < effective_clearance
         for first, second in zip(points, points[1:]):
             distance = math.hypot(second[0] - first[0], second[1] - first[1])
             count = max(1, int(math.ceil(distance / step)))
@@ -325,7 +367,14 @@ class TerrainPathFollower(Node):
                 fraction = index / count
                 x = first[0] + fraction * (second[0] - first[0])
                 y = first[1] + fraction * (second[1] - first[1])
-                if self._point_blocked(x, y):
+                if escaping_existing_clearance:
+                    current_clearance = self._nearest_obstacle_distance(x, y)
+                    if current_clearance + 0.02 < previous_clearance:
+                        return True
+                    if current_clearance >= effective_clearance:
+                        escaping_existing_clearance = False
+                    previous_clearance = current_clearance
+                elif self._point_blocked(x, y):
                     return True
         return False
 
@@ -394,6 +443,7 @@ class TerrainPathFollower(Node):
             self._publish_stop()
             return
         if not self.path:
+            self.publish_status("INTEGRATION_NO_TERRAIN_PLAN_STOP")
             self._publish_stop()
             return
         if (self.path_received_monotonic is None or
@@ -408,9 +458,9 @@ class TerrainPathFollower(Node):
             self._publish_stop()
             return
         if self.obstacle_map_received_monotonic is not None:
-            if (self.obstacle_map is None or
-                    time.monotonic() - self.obstacle_map_received_monotonic >
-                    self.obstacle_map_timeout):
+            obstacle_map_age = self._obstacle_map_age()
+            if (obstacle_map_age is None or
+                    obstacle_map_age > self.obstacle_map_timeout):
                 self.publish_status("INTEGRATION_STALE_OBSTACLE_MAP_STOP")
                 self._publish_stop()
                 return
@@ -426,12 +476,26 @@ class TerrainPathFollower(Node):
             self._publish_stop()
             return
         goal_distance = math.hypot(goal[0] - current_x, goal[1] - current_y)
+        path_end_distance = math.hypot(
+            self.path[-1][0] - current_x, self.path[-1][1] - current_y)
         if goal_distance <= self.goal_tolerance:
             self._publish_stop()
             if not self.reached:
                 self.reached = True
                 self.publish_status(
                     f"INTEGRATION_GOAL_REACHED distance={goal_distance:.2f}")
+            return
+        if path_end_distance <= self.goal_tolerance:
+            # The planner can terminate at a nearby clear cell when the
+            # requested goal itself is occupied. Stop at that safe approach
+            # point instead of driving toward the blocked cell.
+            self._publish_stop()
+            if not self.reached:
+                self.reached = True
+                self.publish_status(
+                    "INTEGRATION_GOAL_REACHED_SAFE_APPROACH "
+                    f"distance={goal_distance:.2f} "
+                    f"offset={math.hypot(self.path[-1][0] - goal[0], self.path[-1][1] - goal[1]):.2f}")
             return
         nearest = min(range(len(self.path)),
                       key=lambda i: math.hypot(self.path[i][0] - current_x,
@@ -452,7 +516,11 @@ class TerrainPathFollower(Node):
         if target_index != self.last_waypoint:
             self.last_waypoint = target_index
             self.publish_status(
-                f"INTEGRATION_FOLLOWING waypoint={target_index}/{len(self.path)}")
+                f"INTEGRATION_FOLLOWING waypoint={target_index}/{len(self.path)} "
+                f"pose=({current_x:.3f},{current_y:.3f}) "
+                f"goal_distance={goal_distance:.3f} "
+                f"target=({target_x:.3f},{target_y:.3f}) "
+                f"heading_error={error:.3f}")
 
 
 def main(args=None) -> None:

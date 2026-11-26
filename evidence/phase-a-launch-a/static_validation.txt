@@ -1,5 +1,5 @@
 LunaBot V4 - Phase A - static validation report
-date: 2026-11-16T20:19:27Z
+date: 2026-11-18T11:13:02Z
 ============================================================
 [PASS] world SDF XML well-formed
 [PASS] world name == lunar_world - got lunar_world
@@ -52,18 +52,18 @@ date: 2026-11-16T20:19:27Z
 [PASS] lunar_terrain.obj: normals for all vertices - vn=102400 v=102400
 [PASS] lunar_terrain.obj: color vertices expected=True - c=102400
 [PASS] lunar_terrain.obj: face indices in bounds - 102400
-[PASS] lunar_terrain.obj: extent matches design - [398.8, 398.8, 11.9]
-[PASS] lunar_terrain.obj: relief within [-12, +10] m - z=[-10.96, 0.94]
+[PASS] lunar_terrain.obj: extent matches design - [398.8, 398.8, 14.4]
+[PASS] lunar_terrain.obj: relief within [-12, +10] m - z=[-9.39, 4.97]
 [PASS] lunar_terrain_collision.obj: has vertices - 10000
 [PASS] lunar_terrain_collision.obj: vertex count square grid - 10000
 [PASS] lunar_terrain_collision.obj: expected design resolution - vertices=10000, expected=10000
 [PASS] lunar_terrain_collision.obj: normals for all vertices - vn=10000 v=10000
 [PASS] lunar_terrain_collision.obj: color vertices expected=False - c=0
 [PASS] lunar_terrain_collision.obj: face indices in bounds - 10000
-[PASS] lunar_terrain_collision.obj: expected collision face count - faces=19264, expected=19264
-[PASS] lunar_terrain_collision.obj: extent matches design - [396.0, 396.0, 11.5]
+[PASS] lunar_terrain_collision.obj: expected collision face count - faces=19602, expected=19602
+[PASS] lunar_terrain_collision.obj: extent matches design - [396.0, 396.0, 14.2]
 [PASS] lunar_terrain_collision.obj: map bounds match design - actual=[-198.0, 198.0, -198.0, 198.0], expected=(-198.0, 198.0, -198.0, 198.0)
-[PASS] lunar_terrain_collision.obj: relief within [-12, +10] m - z=[-10.89, 0.66]
+[PASS] lunar_terrain_collision.obj: relief within [-12, +10] m - z=[-9.32, 4.92]
 [PASS] lunar_terrain_mission_collision.obj: has vertices - 2809
 [PASS] lunar_terrain_mission_collision.obj: vertex count square grid - 2809
 [PASS] lunar_terrain_mission_collision.obj: expected design resolution - vertices=2809, expected=2809

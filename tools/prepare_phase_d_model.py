@@ -5,27 +5,30 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 def prepare(source, destination, watchdog_timeout_sec=None,
-            wsl_gui_budget=False):
+            wsl_gui_budget=False, *, lidar_height=-0.60):
     tree = ET.parse(source)
     sensor = tree.find(".//sensor[@name='lidar']")
     if sensor is None or sensor.get('type') != 'gpu_lidar':
         raise ValueError('Expected the baseline GPU LiDAR')
-    # Intersect the physical low obstacle while providing a planar SLAM scan.
-    # The sensor head sits high on the mast; -0.60 m left the horizontal scan
-    # grazing above the trained rock cluster. Lower it another 0.15 m so the
-    # scan plane crosses the rock bodies without pitching into the ground.
-    sensor.find('pose').text = '0.35 0 -0.75 0 0 0'
+    # Keep a planar SLAM scan. Phase L lowers the scan plane further to
+    # intersect its low rock cluster.
+    sensor.find('pose').text = f'0.35 0 {lidar_height:.2f} 0 0 0'
     if wsl_gui_budget:
         camera = tree.find(".//sensor[@name='rgb_camera']")
         depth = tree.find(".//sensor[@name='depth_camera']")
         horizontal = sensor.find('./ray/scan/horizontal')
         if camera is None or depth is None or horizontal is None:
             raise ValueError('Expected RGB, depth, and horizontal LiDAR sensors')
-        # Bound WSL llvmpipe rendering and scan-matching work. At 5 Hz / 360
-        # samples, odometry can advance faster than slam_toolbox consumes
-        # scans, leaving map->odom several simulation seconds behind.
-        camera.find('update_rate').text = '5'
-        depth.find('update_rate').text = '5'
+        # Bound WSL llvmpipe rendering and Python perception cost. The rover
+        # keeps live RGB-D mapping at a modest rate; the independent LiDAR and
+        # command watchdogs preserve local obstacle stops and safe motion.
+        for sensor_camera in (camera, depth):
+            image = sensor_camera.find('./camera/image')
+            if image is None:
+                raise ValueError('Expected camera image settings')
+            image.find('width').text = '96'
+            image.find('height').text = '72'
+            sensor_camera.find('update_rate').text = '2'
         sensor.find('update_rate').text = '2'
         horizontal.find('samples').text = '180'
     if watchdog_timeout_sec is not None:
@@ -44,6 +47,7 @@ if __name__ == '__main__':
     parser.add_argument('destination', type=Path)
     parser.add_argument('--watchdog-timeout-sec', type=float)
     parser.add_argument('--wsl-gui-budget', action='store_true')
+    parser.add_argument('--lidar-height', type=float, default=-0.60)
     args = parser.parse_args()
     prepare(args.source, args.destination, args.watchdog_timeout_sec,
-            args.wsl_gui_budget)
+            args.wsl_gui_budget, lidar_height=args.lidar_height)

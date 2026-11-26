@@ -165,11 +165,13 @@ class PhaseLMission(Node):
             f"{self.active_goal_id or 'none'}" +
             (f" reason={reason}" if reason else ""))
 
-    def _reset_goal_evidence(self, *, retain_runtime_gates: bool = False) -> None:
+    def _reset_goal_evidence(self, *, retain_runtime_gates: bool = False,
+                             retain_evaluation: bool = False) -> None:
         self.plan_seen = False
         self.goal_reached = False
         if not retain_runtime_gates:
             self.replan_pass = False
+        if not retain_evaluation:
             self.evaluation_pass = False
         self.passed = False
 
@@ -305,16 +307,21 @@ class PhaseLMission(Node):
             return
         new_goal_id = goal_identifier(msg)
         if self.active_goal_id and new_goal_id != self.active_goal_id:
-            # A new request starts a new goal-scoped mission attempt. Inputs
-            # describing the previous goal cannot complete this one. The P8
-            # itinerary mode keeps launch-wide obstacle/replan/evaluation
-            # qualifications, because those monitors are intentionally
-            # single-run latches; a fresh plan and reached-goal event are still
-            # required for every itinerary leg.
+            # A new request starts a new goal-scoped mission attempt. A fresh
+            # plan and reached-goal event are required for every leg. The
+            # evaluator's controller qualification is launch-wide and remains
+            # valid after its first successful physical run.
             self._reset_goal_evidence(
-                retain_runtime_gates=self.retain_runtime_gates_between_goals)
+                retain_runtime_gates=self.retain_runtime_gates_between_goals,
+                retain_evaluation=True)
         self.active_goal_id = new_goal_id
         self.goal_seen = True
+        # In this launch mode AUTO_GOAL is disabled and this topic is fed by
+        # RViz's manual goal tool. The navigation status topic is retained for
+        # display, but a late QoS match can miss its MANUAL_GOAL_SELECTED edge;
+        # the received goal itself is authoritative in manual-only mode.
+        if self.require_manual_goal:
+            self.manual_goal_seen = True
         if self.lifecycle.state in ("FAILED", "ESTOPPED"):
             self.publish_status(
                 f"MISSION_RECOVERY_INPUT_UPDATED lifecycle={self.lifecycle.state} "
@@ -327,6 +334,16 @@ class PhaseLMission(Node):
             return
         valid, reason = validate_occupancy_grid(msg, self.map_frame)
         if not valid:
+            # slam_toolbox can publish a zero-sized placeholder grid before
+            # its first usable scan. Keep the mission in WAITING_FOR_MAP until
+            # SLAM has data; malformed populated grids still fail closed.
+            if (reason == "NONPOSITIVE_DIMENSIONS" and
+                    (int(msg.info.width) <= 0 or int(msg.info.height) <= 0) and
+                    self.lifecycle.state == "WAITING_FOR_MAP"):
+                self.publish_status(
+                    "MISSION_MAP_WAITING_FOR_SLAM "
+                    f"width={int(msg.info.width)} height={int(msg.info.height)}")
+                return
             self.map_valid = False
             self.map_seen = False
             if self.lifecycle.state not in ("FAILED", "ESTOPPED"):

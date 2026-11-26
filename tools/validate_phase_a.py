@@ -306,7 +306,7 @@ def main():
     print("-- meshes --")
     validate_obj(VIS_OBJ, expect_color=True, expected_vertices=320 * 320)
     validate_obj(COL_OBJ, expect_color=False, expected_vertices=100 * 100,
-                 expected_faces=19264, expected_extent=396.0,
+                 expected_faces=2 * (100 - 1) * (100 - 1), expected_extent=396.0,
                  expected_bounds=(-198.0, 198.0, -198.0, 198.0))
     validate_obj(os.path.join(WORLD_DIR, "meshes", "lunar_terrain_mission_collision.obj"),
                  expect_color=False, expected_vertices=53 * 53,

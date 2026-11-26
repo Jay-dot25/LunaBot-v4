@@ -19,16 +19,19 @@ void Stop(int) { running.store(false); }
 
 class TruthRecorder {
  public:
-  explicit TruthRecorder(const std::string &path) : out(path) {
+  TruthRecorder(const std::string &path, const std::string &topic)
+      : out(path), poseTopic(topic) {
     out << "steady_ns,sim_time,x,y,z,qx,qy,qz,qw,yaw\n";
     out.flush();
   }
 
   bool Start() {
+    if (!out)
+      return false;
     const bool clockOk =
         node.Subscribe("/clock", &TruthRecorder::OnClock, this);
     const bool poseOk = node.Subscribe(
-        "/world/lunar_world/pose/info", &TruthRecorder::OnPose, this);
+        poseTopic, &TruthRecorder::OnPose, this);
     return clockOk && poseOk;
   }
 
@@ -40,10 +43,14 @@ class TruthRecorder {
   }
 
   void OnPose(const ignition::msgs::Pose_V &msg) {
-    const double t = simTime.load(std::memory_order_relaxed);
-    if (clockCount.load(std::memory_order_relaxed) == 0 ||
-        !std::isfinite(t))
+    const bool stamped = msg.has_header() && msg.header().has_stamp();
+    if (!stamped && (clockCount.load(std::memory_order_relaxed) == 0 ||
+                     poseTopic == "/world/lunar_world/dynamic_pose/info"))
       return;
+    const double t = stamped
+                         ? msg.header().stamp().sec() +
+                               1e-9 * msg.header().stamp().nsec()
+                         : simTime.load(std::memory_order_relaxed);
     for (int i = 0; i < msg.pose_size(); ++i) {
       const auto &p = msg.pose(i);
       if (p.name() != modelName)
@@ -61,28 +68,29 @@ class TruthRecorder {
           << q.x() << ',' << q.y() << ',' << q.z() << ',' << q.w()
           << ',' << yaw << '\n';
       out.flush();
-      count.fetch_add(1, std::memory_order_relaxed);
     }
   }
 
-  ignition::transport::Node node;
   std::ofstream out;
   std::mutex mutex;
   std::atomic<double> simTime{-1.0};
   std::atomic<unsigned long long> clockCount{0};
-  std::atomic<unsigned long long> count{0};
+  const std::string poseTopic;
   const std::string modelName{"lunabot_v4"};
+  // Destroy the subscriptions before the callback's output and mutex.
+  ignition::transport::Node node;
 };
 }  // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 2) {
-    std::cerr << "usage: capture_gazebo_truth OUTPUT.csv\n";
+  if (argc < 2 || argc > 3) {
+    std::cerr << "usage: capture_gazebo_truth OUTPUT.csv [POSE_TOPIC]\n";
     return 2;
   }
   std::signal(SIGINT, Stop);
   std::signal(SIGTERM, Stop);
-  TruthRecorder recorder(argv[1]);
+  const std::string topic = argc == 3 ? argv[2] : "/world/lunar_world/pose/info";
+  TruthRecorder recorder(argv[1], topic);
   if (!recorder.Start()) {
     std::cerr << "failed to subscribe to /clock or world pose info\n";
     return 3;

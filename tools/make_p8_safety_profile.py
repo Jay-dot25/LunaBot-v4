@@ -11,7 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def make_profile(source: Path, destination: Path, *,
                  health_report_timeout_wall_sec: float = 0.5,
-                 input_timeout_wall_sec: float = 3.0) -> dict:
+                 input_timeout_wall_sec: float = 3.0,
+                 clock_timeout_wall_sec: float = 2.0) -> dict:
     settings = json.loads(source.read_text(encoding="utf-8"))
     health = settings["health"]
     if health["clock_timeout_wall_sec"] != 0.5:
@@ -23,18 +24,21 @@ def make_profile(source: Path, destination: Path, *,
     # stop and retain the independent sim-time age and clock-stall gates.
     if input_timeout_wall_sec <= 0:
         raise ValueError("sensor input timeout must be positive")
+    if clock_timeout_wall_sec <= 0:
+        raise ValueError("simulation clock timeout must be positive")
     health["input_timeout_wall_sec"] = float(input_timeout_wall_sec)
     health["max_stamp_age_sim_sec"] = 3.0
     # The software-rendered simulation periodically stalls planner updates;
     # retain a safe path longer while the planner revalidates it per revision.
     health["path_timeout_sec"] = 18.0
-    # Allow bounded scheduler gaps in llvmpipe while preserving a fail-stop
-    # clock watchdog; a simulation clock stopped for two wall seconds still
-    # latches the controller. Sensor wall age remains separately bounded.
-    health["clock_timeout_wall_sec"] = 2.0
-    # slam_toolbox emits map->odom stamps up to 0.2 s ahead of /clock because
-    # of its 0.1 s publish batching. Keep that allowance local to this TF;
-    # raw sensor stamps retain their existing global future tolerance.
+    # Allow a bounded scheduler gap in llvmpipe while retaining the independent
+    # sensor-age, stamp-age, and controller command watchdogs.
+    health["clock_timeout_wall_sec"] = float(clock_timeout_wall_sec)
+    # Bridge scheduling on software-rendered WSL can deliver a sensor sample
+    # just before the corresponding /clock update. Allow a small, bounded lead
+    # for raw streams as well as localization TF, while retaining the 3 s
+    # stale-stamp gate and independent wall-age / controller watchdogs.
+    health["future_tolerance_sim_sec"] = 0.25
     health["map_tf_stamp_offset_sec"] = 0.0
     health["map_tf_future_tolerance_sim_sec"] = 0.25
     health["map_tf_motion_grace_wall_sec"] = 30.0
@@ -55,12 +59,14 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--health-report-timeout-wall-sec", type=float, default=0.5)
     parser.add_argument("--input-timeout-wall-sec", type=float, default=3.0)
+    parser.add_argument("--clock-timeout-wall-sec", type=float, default=2.0)
     args = parser.parse_args()
     try:
         settings = make_profile(
             args.source, args.output,
             health_report_timeout_wall_sec=args.health_report_timeout_wall_sec,
-            input_timeout_wall_sec=args.input_timeout_wall_sec)
+            input_timeout_wall_sec=args.input_timeout_wall_sec,
+            clock_timeout_wall_sec=args.clock_timeout_wall_sec)
     except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
     print(f"P8_SAFETY_PROFILE_PASS input_timeout_wall_sec="

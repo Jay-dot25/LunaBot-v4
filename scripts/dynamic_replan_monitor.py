@@ -71,6 +71,7 @@ class DynamicReplanMonitor(Node):
         self.status_pub = self.create_publisher(String, self.status_topic, status_qos)
 
         self.goal_seen = False
+        self.active_goal_key: Optional[tuple] = None
         self.last_signature: Optional[tuple] = None
         self.revisions = 0
         self.total_motion = 0.0
@@ -94,12 +95,46 @@ class DynamicReplanMonitor(Node):
         self.status_pub.publish(msg)
         self.get_logger().info(text)
 
-    def _goal_callback(self, _msg: PoseStamped) -> None:
+    @staticmethod
+    def _goal_key(msg: PoseStamped) -> tuple:
+        pose = msg.pose
+        return (
+            msg.header.frame_id or "",
+            round(float(pose.position.x), 5),
+            round(float(pose.position.y), 5),
+            round(float(pose.position.z), 5),
+            round(float(pose.orientation.x), 5),
+            round(float(pose.orientation.y), 5),
+            round(float(pose.orientation.z), 5),
+            round(float(pose.orientation.w), 5),
+        )
+
+    def _goal_callback(self, msg: PoseStamped) -> None:
+        key = self._goal_key(msg)
+        if key != self.active_goal_key:
+            # AStar echoes the active goal on /goal_pose. Pose-based identity
+            # ignores that echo's stamp but starts a fresh replan measurement
+            # for each new operator-selected destination.
+            self.active_goal_key = key
+            self.last_signature = None
+            self.revisions = 0
+            self.total_motion = 0.0
+            self.last_x = None
+            self.last_y = None
+            self.last_planner_status = ""
+            self.passed = False
+            self.publish_status("DYNAMIC_REPLAN_NEW_GOAL")
         self.goal_seen = True
         self._evaluate()
 
     def _planner_status_callback(self, msg: String) -> None:
         self.last_planner_status = msg.data
+        # A previous successful replan does not mean the current plan is still
+        # usable. Reopen the gate whenever the planner starts replanning or
+        # invalidates its active path.
+        if not msg.data.startswith("TERRAIN_PLAN_PASS"):
+            self.passed = False
+        self._evaluate()
 
     def _obstacle_callback(self, msg: String) -> None:
         if "OBSTACLE_DETECTED" in msg.data:
@@ -124,13 +159,8 @@ class DynamicReplanMonitor(Node):
         )
 
     def _plan_callback(self, msg: Path) -> None:
-        # Keep the successful marker latched. The planner may continue
-        # publishing later revisions while the follower settles at its goal,
-        # but those updates must not overwrite DYNAMIC_REPLAN_PASS before the
-        # launcher can retrieve the retained evidence.
-        if self.passed:
-            return
         if not msg.poses:
+            self.passed = False
             self.publish_status("DYNAMIC_REPLAN_EMPTY_PLAN")
             return
         signature = self._signature(msg)
@@ -140,6 +170,7 @@ class DynamicReplanMonitor(Node):
                 f"DYNAMIC_REPLAN_PLAN_RECEIVED cells={len(signature)}")
             return
         if signature != self.last_signature:
+            self.passed = False
             self.revisions += 1
             self.last_signature = signature
             if (self.obstacle_detected_monotonic is not None and
@@ -179,6 +210,11 @@ class DynamicReplanMonitor(Node):
         if self.total_motion < self.minimum_motion:
             self.publish_status(
                 f"DYNAMIC_REPLAN_WAITING_FOR_MOTION motion={self.total_motion:.2f}")
+            return
+        if not self.last_planner_status.startswith("TERRAIN_PLAN_PASS"):
+            self.publish_status(
+                "DYNAMIC_REPLAN_WAITING_FOR_VALID_PLAN "
+                f"planner={self.last_planner_status or 'UNKNOWN'}")
             return
         self.passed = True
         self.publish_status(

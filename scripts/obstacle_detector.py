@@ -99,11 +99,49 @@ class ObstacleDetector(Node):
         return math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                           1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
+    @staticmethod
+    def _convex_hull(points: list[tuple[float, float, float]]) -> list[tuple[float, float]]:
+        """Return the 2D outline of a forward LiDAR return cluster."""
+        coordinates = sorted({(float(x), float(y)) for x, y, _ in points})
+        if len(coordinates) <= 2:
+            return coordinates
+
+        def cross(origin, first, second) -> float:
+            return ((first[0] - origin[0]) * (second[1] - origin[1])
+                    - (first[1] - origin[1]) * (second[0] - origin[0]))
+
+        lower: list[tuple[float, float]] = []
+        for point in coordinates:
+            while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0.0:
+                lower.pop()
+            lower.append(point)
+        upper: list[tuple[float, float]] = []
+        for point in reversed(coordinates):
+            while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0.0:
+                upper.pop()
+            upper.append(point)
+        return lower[:-1] + upper[:-1]
+
+    @staticmethod
+    def _closest_cluster(
+            points: list[tuple[float, float, float]]) -> list[tuple[float, float, float]]:
+        """Separate nearby returns and select the cluster nearest the rover."""
+        ordered = sorted(points, key=lambda point: math.atan2(point[1], point[0]))
+        clusters: list[list[tuple[float, float, float]]] = []
+        for point in ordered:
+            if (not clusters
+                    or math.hypot(point[0] - clusters[-1][-1][0],
+                                  point[1] - clusters[-1][-1][1]) > 0.35
+                    or abs(point[2] - clusters[-1][-1][2]) > 0.35):
+                clusters.append([point])
+            else:
+                clusters[-1].append(point)
+        return min(clusters, key=lambda cluster: min(point[2] for point in cluster))
+
     def _map_transform(self, frame_id: str) -> Optional[TransformStamped]:
         try:
             return self.tf_buffer.lookup_transform(
-                self.map_frame, frame_id, Time(),
-                timeout=Duration(seconds=0.5))
+                self.map_frame, frame_id, Time())
         except tf2_ros.TransformException as exc:
             if self.frame_count - self.last_tf_warning_frame >= 10:
                 self.last_tf_warning_frame = self.frame_count
@@ -159,6 +197,45 @@ class ObstacleDetector(Node):
             point.x, point.y, point.z = x, y, 0.0
             marker.points.append(point)
         self.marker_pub.publish(marker)
+
+        # The points show individual returns, but they do not communicate the
+        # obstacle footprint. Close the convex hull into a clearly visible red
+        # contour so the same outline remains obvious in RViz at map scale.
+        outline = Marker()
+        outline.header = scan.header
+        outline.header.frame_id = self.map_frame
+        outline.ns = "lunabot_obstacles"
+        outline.id = 1
+        outline.type = Marker.LINE_STRIP
+        outline.action = Marker.ADD
+        outline.pose.orientation.w = 1.0
+        outline.scale.x = 0.045
+        outline.color.r = 1.0
+        outline.color.g = 0.05
+        outline.color.b = 0.02
+        outline.color.a = 1.0
+        cluster = self._closest_cluster(points) if points else []
+        hull = self._convex_hull(cluster)
+        transform = self._map_transform(scan.header.frame_id) if len(hull) >= 3 else None
+        if len(hull) >= 3 and transform is not None:
+            yaw = self._yaw(transform)
+            tx = transform.transform.translation.x
+            ty = transform.transform.translation.y
+            for x, y in (*hull, hull[0]):
+                point = Point()
+                point.x = tx + math.cos(yaw) * x - math.sin(yaw) * y
+                point.y = ty + math.sin(yaw) * x + math.cos(yaw) * y
+                # Put the contour on the same map plane as the OccupancyGrid;
+                # scan-frame height otherwise makes its footprint appear to
+                # float above the 2D obstacle/cost maps in RViz.
+                point.z = 0.05
+                outline.points.append(point)
+            self.marker_pub.publish(outline)
+        else:
+            # Remove a previous contour immediately when the scan no longer
+            # contains a sufficiently shaped obstacle cluster.
+            outline.action = Marker.DELETE
+            self.marker_pub.publish(outline)
 
     def _publish_map(self, scan: LaserScan,
                      points: list[tuple[float, float, float]]) -> None:

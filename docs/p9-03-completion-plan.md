@@ -240,13 +240,13 @@ table.
 
 ## Completion checklist
 
-- [ ] Target host, native resolution, software, and graphics mode frozen.
-- [ ] Numeric acceptance limits approved and committed before benchmark runs.
+- [ ] Target host, native resolution, software, and graphics mode verified for acceptance (engineering profile recorded; WSL allocation and display scaling unverified).
+- [x] Numeric engineering limits frozen before acceptance measurements; target runtime verification remains open.
 - [x] WSL access restored or an approved equivalent ROS host selected.
 - [x] Phase L topics, stamps, frames, map synchronization, and planner workload valid for the recorded 2026-11-16 run.
-- [ ] All six contract views and every required topic verified in the layout.
+- [ ] All six contract views and every required topic verified in the live layout (extension installed; draft unsaved and disconnected).
 - [ ] Render and resource instrumentation validated; limitations explicit.
-- [ ] Three valid five-minute baseline trials collected after warm-up.
+- [ ] Three valid five-minute baseline trials collected after warm-up (one mixed-domain diagnostic failed CPU/RTF gates).
 - [ ] Three valid doubled-traffic trials collected after warm-up.
 - [ ] Reconnect recovery and simulation-only guarded e-stop acknowledgment recorded.
 - [ ] Every functional and performance gate evaluated against frozen limits.
@@ -268,3 +268,90 @@ and resource instrumentation, reconnect recovery, doubled-traffic trials, and
 frozen numeric limits have not been accepted. Computer-use approval timed out
 when attempting to inspect the desktop session, so no dashboard changes or
 acceptance trials were performed. P11-01 resource limits also remain open.
+
+## Execution update — 2026-11-17
+
+The extension `lunabot.lunabot-p903-render-probe-0.2.0.foxe` is installed in
+the signed-in Foxglove client. The hosted Personal layout `Coffee Dragonfly` is
+saved with all six named views and connected to the live domain46 adapter at
+`ws://localhost:9091`. Its topic-health panels show live samples, but
+`/lunabot/mission/events` and `/lunabot/dashboard/control_status` had no
+samples. Observed receive-to-render p95 ranged 83–202 ms, exceeding the frozen
+100 ms limit for some rows. Native image/map/plan rendering is not yet measured.
+
+The frozen profile `wsl2-hpvictus15-20261117-v1` has two isolated five-minute
+baselines. Both pass CPU/RSS/VRAM and fail RTF (0.174 and 0.165); client render
+p95 is absent. Windows inventory confirms the documented Victus 15 family,
+Ryzen 5 5600H, RTX 3050 Laptop GPU, and about 8 GB RAM; the measured simulator
+is still a WSL software-rendered workload. An idle-adapter reconnect restored
+custom panel subscriptions in 2.94 seconds, with safety-health receive-to-
+render p95 at 33 ms after recovery. It did not carry simulator or camera/map
+traffic. No valid three-trial baseline/doubled-traffic set, full-workload
+reconnect, target-size client CPU/VRAM sample, or overload result exists.
+P9-03 and P11-01 remain open.
+
+P11-03 run11 passed the simulated mission/evaluator gates. Restart run13 failed
+goal completion. Run14 passed most startup/topic checks but failed its retained
+terrain-plan sample and dynamic-replan gate, then latched `HEALTH_STALE_SCAN`
+and entered mission `FAILED`; see
+`evidence/runs/20261117-p1103-restart/P11-03/run-14/README.md`. A passing
+restart is still required. The four planner-only P10 scenarios remain outside
+live-mission acceptance; physical hardware is not qualified; and the separate
+Goal Master Plan referenced by the project is still not found.
+
+Run15 D3D12 renderer diagnostic also failed: RTF was 0.2066 against the frozen
+0.5 minimum, and the mission failed with `HEALTH_CLOCK_STALLED` and
+`NONPOSITIVE_DIMENSIONS`. The initial depth sample timed out even though
+downstream perception later read depth frames. The launch probe now retries
+header-only receives for up to 90 seconds. This diagnostic did not complete
+the live acceptance suite; run details are in
+`evidence/runs/20261117-p1103-restart/P11-03/run-15-renderer-d3d12/README.md`.
+
+Run16 exercised a targeted mission-supervisor fix: zero-sized SLAM placeholder
+maps now leave the mission in `WAITING_FOR_MAP` instead of forcing `FAILED`.
+The trial confirmed that behavior, but `/clock`, `/lunabot/odom`, and
+`/lunabot/control/status` live-sample checks failed, and the mission/evaluator
+did not pass. See
+`evidence/runs/20261117-p1103-restart/P11-03/run-16-map-startup-fix/README.md`.
+
+Run17 on the software-rendered profile passed the complete live topic/content
+startup contract and dynamic replanning, but the terrain follower did not
+reach the goal before the outer 900-second trial cap, which fired during the goal wait; the full inner wait interval may not have elapsed. The mission and aggregate
+evaluator did not pass. Its concurrent five-minute profile measured RTF
+0.2555, below the frozen 0.5 minimum, with dashboard latency unmeasured. See
+`evidence/runs/20261117-p1103-restart/P11-03/run-17-software-restart/README.md`
+and `evidence/runs/20261117-p1103-restart/P11-01/run17-restart-full-mission/`.
+
+Run18 aligned the WSL demo goal with the documented 4 m route but latched
+`HEALTH_STAMP_RGB_INFO` before reaching the goal. Its five-minute RTF was
+0.3336, still below the frozen 0.5 minimum. Run19 added safety timestamp
+diagnostics; the CameraInfo latch did not recur, but the follower again failed
+to reach the goal before the outer 900-second cap. The evaluator did not pass.
+See the run reports under
+`evidence/runs/20261117-p1103-restart/P11-03/run-18-goal-distance-fix/` and
+`evidence/runs/20261117-p1103-restart/P11-03/run-19-health-diagnostic/`.
+
+### Live six-view diagnostic — 2026-11-17
+
+The hosted `Coffee Dragonfly` layout is saved with six named topic-health views
+and was connected to domain46 Rosbridge during run22. The live mission passed
+startup topic/content checks, terrain planning, dynamic replanning, goal
+completion, and evaluation, then latched `HEALTH_STAMP_IMU`; its launcher hit
+the 900-second cap before clean shutdown. The browser showed current
+fresh/stale/unknown states, but sensor render percentiles remained `n/a` and
+the viewport was 1085x685 rather than the unverified target size. This is not
+a valid baseline trial.
+
+Run21 separately achieved RTF 0.5057 on a 2 ms diagnostic world and passed
+mission/evaluator/clean-shutdown checks. Three P3 repetitions on that world
+included one failed turn-accuracy trial (0.2912 rad against 0.10 rad), so it
+cannot be promoted as the acceptance profile. Run22's resource sampler passed
+CPU/RSS/VRAM, but could not observe `/clock` and has no RTF value. Its sampler
+now subscribes with best-effort QoS; an isolated synthetic clock probe worked,
+but the live-domain issue remains unresolved.
+
+P9-03 remains **IN PROGRESS**. The required three five-minute baseline and
+three doubled-traffic trials, valid render/resource instrumentation,
+workload reconnect, overload behavior, and target-size verification remain
+open. See the run reports and `docs/dashboard-performance.md` for the retained
+evidence.

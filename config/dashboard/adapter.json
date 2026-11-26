@@ -4,20 +4,24 @@
   "publish_period_seconds": 0.25,
   "default_stale_after_seconds": 2.0,
   "topics": [
-    {"topic":"/lunabot/safety/health","type":"std_msgs/msg/String","view":"system_health","stale_after_seconds":0.5},
-    {"topic":"/lunabot/safety/stopped","type":"std_msgs/msg/Bool","view":"system_health","stale_after_seconds":0.5},
-    {"topic":"/lunabot/control/status","type":"std_msgs/msg/String","view":"system_health","stale_after_seconds":1.0},
-    {"topic":"/lunabot/mission/status","type":"std_msgs/msg/String","view":"system_health","stale_after_seconds":2.0},
+    {"topic":"/lunabot/dashboard/control_status","type":"std_msgs/msg/String","view":"mission_and_safety_controls","freshness_mode":"event","stale_after_seconds":60.0},
+    {"topic":"/lunabot/safety/health","type":"std_msgs/msg/String","views":["system_health","mission_and_safety_controls"],"stale_after_seconds":0.5},
+    {"topic":"/lunabot/safety/stopped","type":"std_msgs/msg/Bool","views":["system_health","mission_and_safety_controls"],"stale_after_seconds":0.5},
+    {"topic":"/lunabot/control/status","type":"std_msgs/msg/String","views":["system_health","mission_and_safety_controls"],"stale_after_seconds":1.0},
+    {"topic":"/lunabot/mission/status","type":"std_msgs/msg/String","views":["system_health","mission_and_safety_controls"],"stale_after_seconds":2.0},
     {"topic":"/lunabot/autonomy/status","type":"std_msgs/msg/String","view":"system_health","stale_after_seconds":2.0},
     {"topic":"/lunabot/evaluation/status","type":"std_msgs/msg/String","views":["system_health","planning_and_evaluation"],"stale_after_seconds":2.0},
 
     {"topic":"/lunabot/camera/image_raw","type":"sensor_msgs/msg/Image","view":"sensors_and_perception","stale_after_seconds":0.5,"source_age_limit_seconds":0.25,"sensor_data_qos":true},
+    {"topic":"/lunabot/camera/camera_info","type":"sensor_msgs/msg/CameraInfo","view":"sensors_and_perception","stale_after_seconds":2.0,"sensor_data_qos":true},
     {"topic":"/lunabot/depth/image_raw","type":"sensor_msgs/msg/Image","view":"sensors_and_perception","stale_after_seconds":0.5,"source_age_limit_seconds":0.25,"sensor_data_qos":true},
+    {"topic":"/lunabot/depth/camera_info","type":"sensor_msgs/msg/CameraInfo","view":"sensors_and_perception","stale_after_seconds":2.0,"sensor_data_qos":true},
     {"topic":"/lunabot/terrain/segmentation","type":"sensor_msgs/msg/Image","view":"sensors_and_perception","stale_after_seconds":0.5,"source_age_limit_seconds":0.25,"sensor_data_qos":true},
     {"topic":"/lunabot/terrain/segmentation_confidence","type":"sensor_msgs/msg/Image","view":"sensors_and_perception","stale_after_seconds":0.5,"source_age_limit_seconds":0.25,"sensor_data_qos":true},
     {"topic":"/lunabot/terrain/overlay","type":"sensor_msgs/msg/Image","view":"sensors_and_perception","stale_after_seconds":0.5,"source_age_limit_seconds":0.25,"sensor_data_qos":true},
     {"topic":"/lunabot/lidar/scan","type":"sensor_msgs/msg/LaserScan","view":"sensors_and_perception","stale_after_seconds":0.5,"source_age_limit_seconds":0.25,"sensor_data_qos":true},
     {"topic":"/lunabot/imu","type":"sensor_msgs/msg/Imu","view":"sensors_and_perception","stale_after_seconds":0.25,"source_age_limit_seconds":0.25,"sensor_data_qos":true},
+    {"topic":"/lunabot/joint_states","type":"sensor_msgs/msg/JointState","view":"sensors_and_perception","stale_after_seconds":1.0,"sensor_data_qos":true},
 
     {"topic":"/map","type":"nav_msgs/msg/OccupancyGrid","view":"map_and_localization","frame":"map","stale_after_seconds":2.0},
     {"topic":"/tf","type":"tf2_msgs/msg/TFMessage","view":"map_and_localization","stale_after_seconds":1.0},
@@ -38,6 +42,6 @@
     {"topic":"/lunabot/terrain/plan","type":"nav_msgs/msg/Path","view":"planning_and_evaluation","frame":"map","stale_after_seconds":2.0},
     {"topic":"/lunabot/terrain/planner/status","type":"std_msgs/msg/String","view":"planning_and_evaluation","stale_after_seconds":2.0},
     {"topic":"/lunabot/autonomy/replan_status","type":"std_msgs/msg/String","view":"planning_and_evaluation","stale_after_seconds":2.0},
-    {"topic":"/lunabot/mission/events","type":"std_msgs/msg/String","view":"planning_and_evaluation","stale_after_seconds":30.0,"freshness_mode":"event"}
+    {"topic":"/lunabot/mission/events","type":"std_msgs/msg/String","views":["planning_and_evaluation","mission_and_safety_controls"],"stale_after_seconds":30.0,"freshness_mode":"event"}
   ]
 }
