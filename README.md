@@ -53,6 +53,10 @@ historical runtime scripts and evidence under `evidence/` are not test inputs.
 The MarsSeg Parquet integration test is skipped when optional `pyarrow` is not
 installed, while its dependency-free label-remapping checks still run.
 
+For the independent Gazebo accuracy gate, repeatable headless runs, manual
+RViz and P8 qualification, and optional test setup, see
+[Phase L physical qualification](docs/phase-l-physical-qualification.md).
+
 For one consolidated code map, command reference, topic contract, runtime
 inspection guide, evidence guide, and final A-to-L acceptance procedure, see
 [`docs/full-launch-a-to-l.md`](docs/full-launch-a-to-l.md).
@@ -316,6 +320,12 @@ Phase L began.
 
 ## Quickstart (Phase L)
 
+For the same WSL viewing setup as Phase D, run `bash ./launch-l-view`
+from this repository with other LunaBot runs stopped. Gazebo runs without
+its window, and RViz opens with the Phase L displays and simulation time.
+Use **2D Goal Pose** in connected mapped free space. The launcher prints
+the evidence directory; startup and final mission acceptance are separate.
+
 Phase L is the final presentation mission. It preserves the approved Phase K
 stack, adds a real LiDAR obstacle detector, adds physical habitat/obstacle
 models, and provides an RViz Set Goal tool. The manual gate demonstrates a
@@ -365,3 +375,4 @@ python3 tools/generate_lunar_terrain.py --seed 7  # different crater field
 After regenerating, update `SPAWN_Z` in `scripts/launch-a.sh` from the
 new `evidence/phase-a-launch-a/terrain_stats.txt` (the file prints the
 suggested spawn z).
+# LunaBot-v4
